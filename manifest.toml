@@ -1,0 +1,46 @@
+id = "photos"
+version = "0.1.0"
+# The version of wit/app.wit: links, ranged reads and HLS need 0.2.11.
+api = "^0.2.11"
+
+[name]
+en = "Photos"
+ru = "Фото"
+
+# Photos stay where they are: the user gives the app folders to read.
+# Thumbnails and the index are kept in the user's AppData of the app.
+[permissions]
+files = "folder"
+use = ["ffmpeg"]
+
+# Batches of one user run one after another (workers = 1): the index is
+# rewritten by batches, never by two at once.
+[limits]
+memory = 2
+time = 1
+workers = 1
+
+# One job per photo or video: read what it is, make its thumbnail. The server
+# adds them itself when the user gives a folder and when files there change.
+[[jobs]]
+kind = "media"
+batch = 20
+time = 4
+on = ["file.granted", "file.created", "file.changed", "file.deleted", "file.moved"]
+mime = ["image/*", "video/*"]
+
+# One job per folder for "Rebuild": its subfolders and files get jobs again.
+[[jobs]]
+kind = "scan"
+batch = 20
+time = 2
+
+# For "Rebuild" too: drops what is in no granted folder any more.
+[[jobs]]
+kind = "prune"
+batch = 1
+time = 4
+
+[ui]
+icon = "image"
+entry = "/app/photos"

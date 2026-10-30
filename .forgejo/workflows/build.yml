@@ -1,0 +1,47 @@
+# Checks the plugin and builds its archive for Administration → Plugins →
+# Install; a tag v* publishes the archive as a release.
+name: Build
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust for WebAssembly
+        run: |
+          command -v rustup >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          . "$HOME/.cargo/env" 2>/dev/null || true
+          rustup target add wasm32-wasip2
+          rustup component add rustfmt clippy
+      - name: Format, lint, test
+        run: |
+          . "$HOME/.cargo/env" 2>/dev/null || true
+          cargo fmt -- --check
+          cargo clippy --release --locked --target wasm32-wasip2 -- -D warnings
+          cargo test --locked
+      - name: Build
+        run: |
+          . "$HOME/.cargo/env" 2>/dev/null || true
+          cargo build --release --locked --target wasm32-wasip2
+      - name: Archive
+        run: |
+          mkdir -p dist/photos
+          cp manifest.toml dist/photos/
+          cp target/wasm32-wasip2/release/photos.wasm dist/photos/app.wasm
+          (cd dist && zip -qr photos.zip photos)
+      - uses: actions/upload-artifact@v3
+        with:
+          name: photos
+          path: dist/photos.zip
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          api="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/releases"
+          id=$(curl -sSf -H "Authorization: token $TOKEN" -H 'content-type: application/json' \
+            -d "{\"tag_name\": \"$GITHUB_REF_NAME\", \"name\": \"$GITHUB_REF_NAME\"}" "$api" | sed -n 's/^{"id":\([0-9]*\).*/\1/p')
+          curl -sSf -H "Authorization: token $TOKEN" -F "attachment=@dist/photos.zip" "$api/$id/assets?name=photos.zip"
