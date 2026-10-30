@@ -1,47 +1,125 @@
-# Checks the plugin and builds its archive for Administration → Plugins →
-# Install; a tag v* publishes the archive as a release.
 name: Build
+
+# Checks the plugin and builds its archive for Administration → Plugins → Install.
+#
+# - every push and "Run workflow": versions, fmt, clippy, tests, the page's
+#   JavaScript, the build; the archive photos.zip is kept as an artifact;
+# - a tag v<version> (the version of manifest.toml, e.g. v0.1.0) also publishes
+#   a release with photos.zip and its SHA-256.
+#
+# Runs like the RustCloud repository: clux/muslrust:stable (Ubuntu with Rust),
+# plain git instead of actions/checkout; Node.js from apt only for the page check
+# and upload-artifact. If the Forgejo certificate can't be verified, TLS checks
+# are turned off for git, curl and Node.
+
 on:
   push:
   workflow_dispatch:
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Check, build, archive
+    runs-on: ubuntu25
+    container:
+      image: clux/muslrust:stable
     steps:
-      - uses: actions/checkout@v4
-      - name: Rust for WebAssembly
+      - name: Checkout
+        env:
+          TOKEN: ${{ github.token }}
         run: |
-          command -v rustup >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-          . "$HOME/.cargo/env" 2>/dev/null || true
-          rustup target add wasm32-wasip2
+          if ! curl -sS -o /dev/null "$GITHUB_SERVER_URL" && curl -ksS -o /dev/null "$GITHUB_SERVER_URL"; then
+            echo "Certificate of $GITHUB_SERVER_URL is not trusted: TLS checks are off"
+            git config --global http.sslVerify false
+            echo "NODE_TLS_REJECT_UNAUTHORIZED=0" >> "$GITHUB_ENV"
+            echo "CURL_K=-k" >> "$GITHUB_ENV"
+          fi
+          git init -q .
+          git -c http.extraHeader="Authorization: token $TOKEN" fetch -q --depth 1 \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+
+      - name: Tools
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends nodejs jq zip >/dev/null
           rustup component add rustfmt clippy
-      - name: Format, lint, test
+          rustup target add wasm32-wasip2
+          rustc --version && cargo --version && node --version
+
+      # One version everywhere, and the WIT the manifest says it is built against.
+      - name: Versions
         run: |
-          . "$HOME/.cargo/env" 2>/dev/null || true
-          cargo fmt -- --check
-          cargo clippy --release --locked --target wasm32-wasip2 -- -D warnings
-          cargo test --locked
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' manifest.toml)
+          crate=$(sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          api=$(sed -n 's/^api = "^\(.*\)"/\1/p' manifest.toml)
+          wit=$(sed -n 's/^package rustcloud:app@\(.*\);/\1/p' wit/app.wit)
+          echo "manifest $version, Cargo.toml $crate, api ^$api, wit/app.wit $wit"
+          [ "$version" = "$crate" ] || { echo "::error::manifest.toml $version ≠ Cargo.toml $crate"; exit 1; }
+          [ "$api" = "$wit" ] || { echo "::error::manifest api ^$api ≠ wit/app.wit $wit"; exit 1; }
+          case "$GITHUB_REF" in
+            refs/tags/v*)
+              [ "${GITHUB_REF#refs/tags/v}" = "$version" ] || {
+                echo "::error::tag ${GITHUB_REF#refs/tags/} ≠ v$version of manifest.toml"; exit 1; } ;;
+          esac
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Format
+        run: cargo fmt -- --check
+
+      - name: Clippy
+        run: cargo clippy --release --locked --target wasm32-wasip2 -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Page
+        run: |
+          node --check ui/app.js
+          node --check e2e/photos.mjs
+
       - name: Build
         run: |
-          . "$HOME/.cargo/env" 2>/dev/null || true
           cargo build --release --locked --target wasm32-wasip2
-      - name: Archive
-        run: |
           mkdir -p dist/photos
           cp manifest.toml dist/photos/
           cp target/wasm32-wasip2/release/photos.wasm dist/photos/app.wasm
-          (cd dist && zip -qr photos.zip photos)
-      - uses: actions/upload-artifact@v3
+          (cd dist && zip -qr photos.zip photos && sha256sum photos.zip > photos.zip.sha256)
+          ls -l dist/photos dist/photos.zip
+          cat dist/photos.zip.sha256
+
+      - name: Keep the archive
+        uses: actions/upload-artifact@v3
         with:
-          name: photos
+          name: photos-${{ env.VERSION }}
           path: dist/photos.zip
+
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          api="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/releases"
-          id=$(curl -sSf -H "Authorization: token $TOKEN" -H 'content-type: application/json' \
-            -d "{\"tag_name\": \"$GITHUB_REF_NAME\", \"name\": \"$GITHUB_REF_NAME\"}" "$api" | sed -n 's/^{"id":\([0-9]*\).*/\1/p')
-          curl -sSf -H "Authorization: token $TOKEN" -F "attachment=@dist/photos.zip" "$api/$id/assets?name=photos.zip"
+          set -eu
+          tag="${GITHUB_REF#refs/tags/}"
+          api="$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY"
+          auth="Authorization: token $TOKEN"
+          # The release of this tag, or a new one; a rerun replaces its files.
+          id=$(curl ${CURL_K:-} -sS -H "$auth" "$api/releases/tags/$tag" | jq -r '.id // empty')
+          if [ -z "$id" ]; then
+            id=$(curl ${CURL_K:-} -sSf -X POST -H "$auth" -H 'content-type: application/json' \
+              -d "$(jq -n --arg tag "$tag" '{tag_name: $tag, name: $tag, body: "Install photos.zip on Administration → Plugins."}')" \
+              "$api/releases" | jq -r '.id')
+          fi
+          echo "release $tag: id $id"
+          for file in photos.zip photos.zip.sha256; do
+            old=$(curl ${CURL_K:-} -sS -H "$auth" "$api/releases/$id/assets" | jq -r --arg n "$file" '.[] | select(.name == $n) | .id')
+            [ -z "$old" ] || curl ${CURL_K:-} -sSf -X DELETE -H "$auth" "$api/releases/$id/assets/$old"
+            curl ${CURL_K:-} -sSf -X POST -H "$auth" -F "attachment=@dist/$file" \
+              "$api/releases/$id/assets?name=$file" >/dev/null
+            echo "uploaded $file"
+          done

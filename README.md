@@ -53,8 +53,12 @@ cp target/wasm32-wasip2/release/photos.wasm dist/photos/app.wasm
 (cd dist && zip -r photos.zip photos)
 ```
 
-«Администрирование → Плагины → Установить плагин…» → `photos.zip` → включить. В Actions это делает
-[.forgejo/workflows/build.yml](.forgejo/workflows/build.yml); тег `v*` выкладывает архив в релиз.
+«Администрирование → Плагины → Установить плагин…» → `photos.zip` → включить.
+
+В Forgejo Actions это делает [.forgejo/workflows/build.yml](.forgejo/workflows/build.yml): на каждый
+push — проверка версий (`manifest.toml` = `Cargo.toml`, `api` = версия `wit/app.wit`), fmt, clippy,
+тесты, синтаксис JS, сборка; `photos.zip` остаётся артефактом запуска. Тег `v<версия манифеста>`
+(`v0.1.0`) ещё и публикует релиз с `photos.zip` и его SHA-256.
 
 `wit/app.wit` — копия `crates/plugin-api/wit/app.wit` сервера той версии, что в `manifest.toml`.
 
