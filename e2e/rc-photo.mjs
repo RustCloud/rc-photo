@@ -1,8 +1,8 @@
-// End-to-end check of the rc-image (Photos) plugin on a fresh RustCloud with ffmpeg:
+// End-to-end check of the rc-photo (Photos) plugin on a fresh RustCloud with ffmpeg:
 // install, a folder of photos and videos, the jobs, then the page in a real
 // browser — timeline, filters, viewer — with screenshots in /out.
 //
-//   node rc-image.mjs <base url>      (in mcr.microsoft.com/playwright, /e2e = this folder)
+//   node rc-photo.mjs <base url>      (in mcr.microsoft.com/playwright, /e2e = this folder)
 import { readFileSync, existsSync } from 'node:fs';
 import { chromium } from 'playwright';
 
@@ -154,9 +154,9 @@ const browser = await chromium.launch();
 const setup = await browser.newContext({ baseURL: base });
 const api = setup.request;
 await ok(await api.post('/api/v1/auth/register', { data: { username: 'admin', password: 'password123' } }), 'register');
-const installed = await json(await api.post('/api/v1/admin/plugins', { headers: H, data: readFileSync('/e2e/rc-image.zip') }), 'install');
+const installed = await json(await api.post('/api/v1/admin/plugins', { headers: H, data: readFileSync('/e2e/rc-photo.zip') }), 'install');
 console.log('installed:', JSON.stringify(installed).slice(0, 300));
-await json(await api.put('/api/v1/admin/plugins/rc-image', { headers: H, data: { enabled: true } }), 'enable');
+await json(await api.put('/api/v1/admin/plugins/rc-photo', { headers: H, data: { enabled: true } }), 'enable');
 
 const root = (await json(await api.get('/api/v1/files/root'), 'root')).id;
 const folder = async (parent, name) =>
@@ -214,7 +214,7 @@ for (const name of ['photo.heic', 'video.mp4', 'hevc.mkv', 'long.mkv']) {
 await upload(photosFolder, 'notes.txt', Buffer.from('not a photo'));
 
 await json(
-  await api.post('/api/v1/grants', { headers: H, data: { app_id: 'rc-image', node_id: photosFolder, write: false, kind: 'standing' } }),
+  await api.post('/api/v1/grants', { headers: H, data: { app_id: 'rc-photo', node_id: photosFolder, write: false, kind: 'standing' } }),
   'grant',
 );
 
@@ -223,7 +223,7 @@ await json(
 const started = Date.now();
 let state;
 for (;;) {
-  state = await json(await api.get('/app/rc-image/api/state', { headers: H }), 'state');
+  state = await json(await api.get('/app/rc-photo/api/state', { headers: H }), 'state');
   const left = Object.values(state.progress).reduce((sum, kind) => sum + kind.waiting, 0);
   if (!left && state.shards.length) break;
   if (Date.now() - started > 180_000) throw new Error(`jobs not done: ${JSON.stringify(state.progress)}`);
@@ -239,7 +239,7 @@ for (const e of entries.filter((e) => !e.name.endsWith('.jpg'))) {
   console.log(`${e.name}: ${e.mime} ${e.container} ${e.width}x${e.height} thumb=${e.thumb} preview=${e.preview} codec=${e.codec ?? '-'} error=${e.error ?? '-'}`);
 }
 const links = await json(
-  await api.post('/app/rc-image/api/links', { headers: H, data: { items: [{ id: sample.id, kind: 'thumb' }, { id: sample.id, kind: 'original' }] } }),
+  await api.post('/app/rc-photo/api/links', { headers: H, data: { items: [{ id: sample.id, kind: 'thumb' }, { id: sample.id, kind: 'original' }] } }),
   'links',
 );
 const thumb = await fetch(base + links.urls[0]);
@@ -254,7 +254,7 @@ async function look(colorScheme, prefix) {
   const page = await context.newPage();
   page.on('console', (m) => m.type() === 'error' && errors.push(`${prefix}: ${m.text()}`));
   page.on('pageerror', (e) => errors.push(`${prefix}: ${e.message}`));
-  await page.goto('/#/app/rc-image');
+  await page.goto('/#/app/rc-photo');
   const frame = page.frameLocator('iframe');
   await frame.locator('.tile img.loaded').first().waitFor({ timeout: 30_000 });
   await page.waitForTimeout(1500);
@@ -301,7 +301,7 @@ console.log(`zoom transform: ${await frame.locator('.viewer .media').evaluate((e
 await page.screenshot({ path: '/out/light-zoom.png' });
 await page.keyboard.press('Escape');
 await page.waitForTimeout(600);
-console.log(`closed: viewers left ${await frame.locator('.viewer').count()}, favorites ${JSON.stringify((await json(await api.get('/app/rc-image/api/state', { headers: H }), 'state')).favorites.length)}`);
+console.log(`closed: viewers left ${await frame.locator('.viewer').count()}, favorites ${JSON.stringify((await json(await api.get('/app/rc-photo/api/state', { headers: H }), 'state')).favorites.length)}`);
 
 // HEIC: shown by its preview. Video: plays.
 for (const name of ['photo.heic', 'video.mp4', 'hevc.mkv']) {
@@ -381,7 +381,7 @@ await page.screenshot({ path: '/out/light-phone.png' });
 // Events and Rebuild: a deleted file leaves the gallery, Rebuild finds the rest again.
 const countEntries = async () => {
   for (const started = Date.now(); ; ) {
-    const now = await json(await api.get('/app/rc-image/api/state', { headers: H }), 'state');
+    const now = await json(await api.get('/app/rc-photo/api/state', { headers: H }), 'state');
     if (!Object.values(now.progress).some((kind) => kind.waiting)) {
       let n = 0;
       for (const url of now.shards) n += (await json(await api.get(url), 'shard')).length;
@@ -394,7 +394,7 @@ const countEntries = async () => {
 await ok(await api.delete(`/api/v1/files/${sample.id}`, { headers: H }), 'delete');
 await new Promise((resolve) => setTimeout(resolve, 1500));
 console.log(`after deleting IMG_4100: ${await countEntries()} entries`);
-await json(await api.post('/app/rc-image/api/rebuild', { headers: H }), 'rebuild');
+await json(await api.post('/app/rc-photo/api/rebuild', { headers: H }), 'rebuild');
 await new Promise((resolve) => setTimeout(resolve, 1500));
 console.log(`after Rebuild: ${await countEntries()} entries`);
 
@@ -407,7 +407,7 @@ const bob = await browser.newContext({ baseURL: base, locale: 'ru-RU', viewport:
 await bob.request.post('/api/v1/auth/login', { headers: H, data: { username: 'bob', password: 'password123' } });
 const bobPage = await bob.newPage();
 bobPage.on('pageerror', (e) => errors.push(`bob: ${e.message}`));
-await bobPage.goto('/#/app/rc-image');
+await bobPage.goto('/#/app/rc-photo');
 const choose = bobPage.frameLocator('iframe').getByRole('button', { name: 'Выбрать папку' });
 await choose.waitFor({ timeout: 15_000 });
 await bobPage.screenshot({ path: '/out/bob-empty.png' });

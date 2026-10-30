@@ -1,7 +1,7 @@
-# rc-image ("Photos"): a gallery for RustCloud, a WASM plugin built on its own.
+# rc-photo ("Photos"): a gallery for RustCloud, a WASM plugin built on its own.
 # Build: cargo build --release --target wasm32-wasip2
 [package]
-name = "rc-image"
+name = "rc-photo"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
