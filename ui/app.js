@@ -65,6 +65,13 @@
       downloading: 'Downloading…',
       loading: 'Loading…',
       converting: 'The server converts the video…',
+      play: 'Play (Space)',
+      pause: 'Pause (Space)',
+      mute: 'Mute (M)',
+      unmute: 'Unmute (M)',
+      volume: 'Volume (↑ ↓)',
+      seek: 'Position (J, L: 10 s)',
+      speed: 'Speed',
       videoFailed: 'This video can’t be played here.',
       details: 'Details',
       size: 'Size',
@@ -141,6 +148,13 @@
       downloading: 'Скачивание…',
       loading: 'Загрузка…',
       converting: 'Сервер перекодирует видео…',
+      play: 'Смотреть (пробел)',
+      pause: 'Пауза (пробел)',
+      mute: 'Выключить звук (M)',
+      unmute: 'Включить звук (M)',
+      volume: 'Громкость (↑ ↓)',
+      seek: 'Позиция (J, L — на 10 с)',
+      speed: 'Скорость',
       videoFailed: 'Это видео здесь не воспроизвести.',
       details: 'Сведения',
       size: 'Размер',
@@ -177,6 +191,9 @@
     heart: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>',
     download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
     play: '<path d="M8 5v14l11-7z"/>',
+    pause: '<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>',
+    volume: '<path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/>',
+    muted: '<path d="M4 9v6h4l5 4V5L8 9z"/><path d="m17 9 5 6M22 9l-5 6"/>',
     image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 16-5-5-9 9"/>',
     video: '<rect x="3" y="5" width="14" height="14" rx="2"/><path d="m17 10 4-2v8l-4-2"/>',
     calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
@@ -236,6 +253,10 @@
       i++;
     }
     return `${n.toLocaleString(intlLocale, { maximumFractionDigits: i ? 1 : 0 })} ${units[i]}`;
+  }
+
+  function durationText(seconds) {
+    return duration(seconds * 1000);
   }
 
   function duration(ms) {
@@ -1149,6 +1170,7 @@
       style,
       onclick: open,
       onkeydown: (event) => {
+        if (viewer) return;
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
           open();
@@ -1409,6 +1431,168 @@
     return hlsScript;
   }
 
+  /** What the player keeps from one video to the next. */
+  const player = { volume: 1, muted: false, rate: 1 };
+  const RATES = [1, 1.25, 1.5, 2, 0.5];
+
+  /**
+   * Our own controls for a video. The browser's would sit under the viewer's
+   * bars, its full-screen button can't work in the sandbox, and its keys
+   * would fight the viewer's.
+   */
+  class VideoControls {
+    /** `done` is called after each use, to give the keys back to the viewer. */
+    constructor(video, entry, done) {
+      this.video = video;
+      this.entry = entry;
+      video.volume = player.volume;
+      video.muted = player.muted;
+      video.defaultPlaybackRate = video.playbackRate = player.rate;
+
+      const button = (name, label, onclick) =>
+        iconButton(name, label, () => {
+          onclick();
+          done();
+        });
+      this.playButton = button('play', t.play, () => this.toggle());
+      this.time = h('span', { class: 'vtime' });
+      this.seek = h('input', { type: 'range', class: 'vseek', min: 0, max: 1000, step: 1, value: 0, 'aria-label': t.seek, title: t.seek });
+      this.muteButton = button('volume', t.mute, () => this.toggleMute());
+      this.volume = h('input', { type: 'range', class: 'vvolume', min: 0, max: 100, step: 1, 'aria-label': t.volume, title: t.volume });
+      this.rateButton = h('button', { class: 'vrate', title: t.speed, onclick: () => (this.nextRate(), done()) });
+      this.root = h(
+        'div',
+        { class: 'vcontrols' },
+        this.seek,
+        h('div', { class: 'vrow' }, this.playButton, this.time, h('div', { class: 'spacer' }), this.muteButton, this.volume, this.rateButton),
+      );
+      this.big = h('button', { class: 'vbig', 'aria-label': t.play, onclick: () => (this.toggle(), done()) }, icon('play'));
+      this.waiting = h('div', { class: 'vwait', hidden: true }, h('div', { class: 'spinner' }));
+
+      // Dragging the position shows the time; letting go seeks (once: HLS
+      // pieces are made on request).
+      this.seek.addEventListener('input', () => {
+        this.dragging = true;
+        this.drawTime(this.seekTarget());
+      });
+      this.seek.addEventListener('change', () => {
+        this.dragging = false;
+        video.currentTime = this.seekTarget();
+        done();
+      });
+      this.volume.addEventListener('input', () => {
+        video.volume = Number(this.volume.value) / 100;
+        video.muted = video.volume === 0;
+      });
+      this.volume.addEventListener('change', done);
+
+      video.addEventListener('click', () => (this.toggle(), done()));
+      for (const name of ['play', 'pause', 'ended']) video.addEventListener(name, () => this.drawState());
+      for (const name of ['timeupdate', 'progress', 'durationchange', 'loadedmetadata']) {
+        video.addEventListener(name, () => this.drawPosition());
+      }
+      video.addEventListener('volumechange', () => {
+        player.volume = video.volume;
+        player.muted = video.muted;
+        this.drawVolume();
+      });
+      video.addEventListener('ratechange', () => {
+        player.rate = video.playbackRate;
+        this.drawRate();
+      });
+      video.addEventListener('waiting', () => (this.waiting.hidden = false));
+      for (const name of ['playing', 'canplay', 'error']) video.addEventListener(name, () => (this.waiting.hidden = true));
+      this.drawState();
+      this.drawPosition();
+      this.drawVolume();
+      this.drawRate();
+    }
+
+    /** Seconds; HLS may not know its length at first, the index does. */
+    get duration() {
+      const d = this.video.duration;
+      return Number.isFinite(d) && d > 0 ? d : (this.entry.duration || 0) / 1000;
+    }
+
+    seekTarget() {
+      return (Number(this.seek.value) / 1000) * this.duration;
+    }
+
+    toggle() {
+      if (this.video.paused || this.video.ended) this.video.play().catch(() => this.drawState());
+      else this.video.pause();
+    }
+
+    toggleMute() {
+      // Unmuting at volume 0 would stay silent.
+      if (this.video.muted && this.video.volume === 0) this.video.volume = 0.5;
+      this.video.muted = !this.video.muted;
+    }
+
+    changeVolume(step) {
+      this.video.muted = false;
+      this.video.volume = Math.min(1, Math.max(0, Math.round((this.video.volume + step) * 10) / 10));
+    }
+
+    seekBy(seconds) {
+      this.video.currentTime = Math.min(Math.max(this.video.currentTime + seconds, 0), this.duration || Infinity);
+    }
+
+    nextRate() {
+      this.video.playbackRate = RATES[(RATES.indexOf(this.video.playbackRate) + 1) % RATES.length] ?? 1;
+    }
+
+    drawState() {
+      const paused = this.video.paused || this.video.ended;
+      this.playButton.replaceChildren(icon(paused ? 'play' : 'pause'));
+      this.playButton.title = paused ? t.play : t.pause;
+      this.playButton.setAttribute('aria-label', this.playButton.title);
+      this.big.hidden = !paused;
+    }
+
+    drawPosition() {
+      const duration = this.duration;
+      const now = this.video.currentTime;
+      const buffered = this.video.buffered;
+      let loaded = 0;
+      for (let i = 0; i < buffered.length; i++) {
+        if (buffered.start(i) <= now + 0.5) loaded = Math.max(loaded, buffered.end(i));
+      }
+      const percent = (seconds) => (duration ? Math.min(100, (seconds / duration) * 100) : 0);
+      this.seek.style.setProperty('--buffered', `${percent(loaded)}%`);
+      if (!this.dragging) {
+        this.seek.value = String(Math.round(percent(now) * 10));
+        this.seek.style.setProperty('--played', `${percent(now)}%`);
+        this.drawTime(now);
+      }
+    }
+
+    drawTime(seconds) {
+      const total = this.duration;
+      this.time.textContent = `${durationText(seconds)} / ${total ? durationText(total) : '–:––'}`;
+    }
+
+    drawVolume() {
+      const silent = this.video.muted || this.video.volume === 0;
+      this.muteButton.replaceChildren(icon(silent ? 'muted' : 'volume'));
+      this.muteButton.title = silent ? t.unmute : t.mute;
+      this.muteButton.setAttribute('aria-label', this.muteButton.title);
+      const level = silent ? 0 : Math.round(this.video.volume * 100);
+      this.volume.value = String(level);
+      this.volume.style.setProperty('--level', `${level}%`);
+    }
+
+    drawRate() {
+      this.rateButton.textContent = `${this.video.playbackRate}×`;
+    }
+
+    remove() {
+      this.root.remove();
+      this.big.remove();
+      this.waiting.remove();
+    }
+  }
+
   const PHOTOS_SHOWN = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif', 'image/bmp'];
 
   class Viewer {
@@ -1428,6 +1612,10 @@
       return this.list[this.index];
     }
 
+    focus() {
+      this.root.focus({ preventScroll: true });
+    }
+
     build() {
       this.blur = h('div', { class: 'blur' });
       this.stage = h('div', { class: 'stage' });
@@ -1438,8 +1626,16 @@
       this.nextButton = h('button', { class: 'nav next', 'aria-label': t.next, onclick: () => this.go(1) }, icon('right'));
       this.info = h('aside', { class: 'info', hidden: !this.infoOpen });
       this.stage.append(this.bar, this.prevButton, this.nextButton, this.status, this.strip);
-      this.root = h('div', { class: 'viewer', role: 'dialog', 'aria-modal': 'true' }, h('div', { class: 'backdrop' }, this.blur), this.stage, this.info);
+      this.root = h(
+        'div',
+        { class: 'viewer', role: 'dialog', 'aria-modal': 'true', tabindex: -1 },
+        h('div', { class: 'backdrop' }, this.blur),
+        this.stage,
+        this.info,
+      );
       document.body.append(this.root);
+      // The keys go to the viewer, not to the tile it was opened from.
+      this.focus();
 
       this.onKey = (event) => this.key(event);
       document.addEventListener('keydown', this.onKey);
@@ -1483,6 +1679,8 @@
       this.drawBar();
       this.drawInfo();
       this.drawStrip();
+      // A video has its own controls where the strip would be.
+      this.strip.hidden = entry.video;
       this.prevButton.disabled = index <= 0;
       this.nextButton.disabled = index >= this.list.length - 1;
       link('thumb', entry).then((url) => {
@@ -1523,7 +1721,6 @@
     async showVideo(entry) {
       const video = h('video', {
         class: 'media-video',
-        controls: true,
         autoplay: true,
         playsinline: true,
         style: 'position:absolute;inset:0;width:100%;height:100%;background:#000',
@@ -1531,6 +1728,11 @@
       link('thumb', entry).then((url) => url && (video.poster = url));
       this.media.append(video);
       this.video = video;
+      this.player = new VideoControls(video, entry, () => {
+        this.focus();
+        this.wake();
+      });
+      this.stage.append(this.player.big, this.player.waiting, this.player.root);
       const stream = async (mode) => {
         if (mode === 'h264') this.setStatus(t.converting);
         const { url } = await api('GET', `/stream/${entry.id}?mode=${mode}`);
@@ -1568,6 +1770,8 @@
     cleanupMedia() {
       this.hls?.destroy();
       this.hls = null;
+      this.player?.remove();
+      this.player = null;
       if (this.video) {
         this.video.pause();
         this.video.removeAttribute('src');
@@ -1656,7 +1860,7 @@
     }
 
     down(event) {
-      if (event.target.closest('button, video') || event.button > 0) return;
+      if (event.target.closest('button, input, video, .vcontrols') || event.button > 0) return;
       this.stage.setPointerCapture(event.pointerId);
       this.pointers.set(event.pointerId, this.point(event));
       this.gesture = { start: this.point(event), view: { ...this.view }, moved: false };
@@ -1719,7 +1923,14 @@
     }
 
     key(event) {
-      if (event.target.closest?.('input, textarea')) return;
+      // A slider moves with its own arrow keys.
+      if (event.target.matches?.('input[type=range]') && event.key.startsWith('Arrow')) return;
+      if (event.target.closest?.('input:not([type=range]), textarea')) return;
+      if (this.player && this.videoKey(event)) {
+        event.preventDefault();
+        this.wake();
+        return;
+      }
       if (event.key === 'Escape') this.close();
       else if (event.key === 'ArrowLeft') this.go(-1);
       else if (event.key === 'ArrowRight') this.go(1);
@@ -1729,11 +1940,29 @@
       event.preventDefault();
     }
 
-    /** The bars hide after a while without the mouse moving. */
+    /** Keys of the player; false if the key isn't one. */
+    videoKey(event) {
+      const player = this.player;
+      const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      if (key === ' ' || key === 'k' || key === 'л') player.toggle();
+      else if (key === 'm' || key === 'ь') player.toggleMute();
+      else if (key === 'ArrowUp') player.changeVolume(0.1);
+      else if (key === 'ArrowDown') player.changeVolume(-0.1);
+      else if (key === 'j' || key === 'о') player.seekBy(-10);
+      else if (key === 'l' || key === 'д') player.seekBy(10);
+      else if (key === 'ArrowLeft' && event.shiftKey) player.seekBy(-5);
+      else if (key === 'ArrowRight' && event.shiftKey) player.seekBy(5);
+      else return false;
+      return true;
+    }
+
+    /** The bars hide after a while without the mouse moving; not over a paused video. */
     wake() {
       this.root.classList.remove('idle');
       clearTimeout(this.idleTimer);
-      this.idleTimer = setTimeout(() => this.root.classList.add('idle'), 3000);
+      this.idleTimer = setTimeout(() => {
+        if (!this.video || !this.video.paused) this.root.classList.add('idle');
+      }, 3000);
     }
 
     setStatus(text) {
@@ -1848,6 +2077,8 @@
       const finish = () => {
         this.cleanupMedia();
         this.root.remove();
+        // Back to the tile, for the keyboard.
+        canvas.querySelector(`.tile[data-id="${this.entry.id}"]`)?.focus({ preventScroll: true });
       };
       if (now) return finish();
       this.root.classList.remove('open');

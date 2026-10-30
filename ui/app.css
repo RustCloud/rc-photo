@@ -828,10 +828,161 @@ svg.icon {
 .viewer .nav[disabled] {
   visibility: hidden;
 }
+.viewer:focus {
+  outline: none;
+}
+/* Hidden bars don't catch clicks meant for what is under them. */
 .viewer.idle .bar,
 .viewer.idle .nav,
-.viewer.idle .strip {
+.viewer.idle .strip,
+.viewer.idle .vcontrols {
   opacity: 0;
+  pointer-events: none;
+}
+.viewer.idle .stage {
+  cursor: none;
+}
+.viewer .strip[hidden] {
+  display: none;
+}
+
+/* Video controls */
+.vcontrols {
+  position: absolute;
+  z-index: 3;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 28px 16px 10px;
+  background: linear-gradient(transparent, rgb(0 0 0 / 0.65));
+  transition: opacity 0.25s;
+}
+.vrow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.vrow .spacer {
+  flex: 1;
+}
+.vtime {
+  margin-left: 6px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.vcontrols svg.icon,
+.vbig svg.icon {
+  fill: currentColor;
+}
+.vcontrols .icon-btn svg.icon[aria-hidden] path:not(:first-child) {
+  fill: none;
+}
+.vcontrols input[type='range'] {
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
+  height: 16px;
+  background: transparent;
+  cursor: pointer;
+}
+.vcontrols input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--track);
+}
+.vcontrols input[type='range']::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--track);
+}
+.vcontrols input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.4);
+}
+.vcontrols input[type='range']::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 0;
+  border-radius: 50%;
+  background: #fff;
+}
+.vseek {
+  display: block;
+  width: 100%;
+  --track: linear-gradient(
+    to right,
+    var(--accent) var(--played, 0%),
+    rgb(255 255 255 / 0.5) var(--played, 0%),
+    rgb(255 255 255 / 0.5) var(--buffered, 0%),
+    rgb(255 255 255 / 0.22) var(--buffered, 0%)
+  );
+}
+.vvolume {
+  width: 84px;
+  --track: linear-gradient(to right, #fff var(--level, 100%), rgb(255 255 255 / 0.3) var(--level, 100%));
+}
+.vrate {
+  min-width: 44px;
+  height: 32px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+.vrate:hover {
+  background: rgb(255 255 255 / 0.12);
+}
+.vbig {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  top: 50%;
+  width: 72px;
+  height: 72px;
+  margin: -36px 0 0 -36px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 0.5);
+  color: #fff;
+  backdrop-filter: blur(6px);
+  transition: transform 0.15s;
+}
+.vbig:hover {
+  transform: scale(1.06);
+}
+.vbig svg.icon {
+  width: 32px;
+  height: 32px;
+  margin-left: 4px;
+}
+.vbig[hidden],
+.vwait[hidden] {
+  display: none;
+}
+.vwait {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.vwait .spinner {
+  width: 40px;
+  height: 40px;
+  border-width: 3px;
+  color: #fff;
 }
 .viewer .status {
   position: absolute;

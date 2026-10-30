@@ -318,6 +318,51 @@ for (const name of ['photo.heic', 'video.mp4', 'hevc.mkv']) {
       .catch(() => {});
     const video = await frame.locator('.viewer video').evaluate((v) => ({ ready: v.readyState, src: v.currentSrc.slice(0, 60), error: v.error?.code ?? null }));
     console.log(`${name}: ${JSON.stringify(video)} status="${await frame.locator('.viewer .status').innerText()}"`);
+    if (name === 'video.mp4') {
+      // The player: keys go to it, not to the tile behind; its controls take clicks.
+      const state = () =>
+        frame.locator('.viewer video').evaluate((v) => ({
+          paused: v.paused,
+          muted: v.muted,
+          volume: Math.round(v.volume * 100) / 100,
+          at: Math.round(v.currentTime * 10) / 10,
+          rate: v.playbackRate,
+        }));
+      await frame.locator('.viewer video').evaluate((v) => v.play().catch(() => {}));
+      await page.waitForTimeout(500);
+      const before = await state();
+      await page.keyboard.press('Space');
+      await page.waitForTimeout(300);
+      const paused = await state();
+      await page.keyboard.press('Space');
+      await page.waitForTimeout(300);
+      const resumed = await state();
+      console.log(`space: playing ${!before.paused} → paused ${paused.paused} → playing ${!resumed.paused}; viewers ${await frame.locator('.viewer').count()}`);
+      await page.keyboard.press('m');
+      await page.keyboard.press('ArrowDown');
+      await page.keyboard.press('ArrowDown');
+      console.log(`m, ↓↓: ${JSON.stringify(await state())}`);
+      await page.keyboard.press('m');
+      console.log(`m again: muted ${(await state()).muted}`);
+      await frame.locator('.viewer video').evaluate((v) => v.pause());
+      await frame.locator('.vseek').evaluate((input) => {
+        input.value = '500';
+        input.dispatchEvent(new Event('input'));
+        input.dispatchEvent(new Event('change'));
+      });
+      await page.waitForTimeout(300);
+      console.log(`seek to the middle: at ${(await state()).at} s, time "${await frame.locator('.vtime').innerText()}"`);
+      await page.keyboard.press('l');
+      await page.waitForTimeout(200);
+      console.log(`l: at ${(await state()).at} s`);
+      // Volume by mouse: the slider is under the pointer, nothing covers it.
+      const slider = await frame.locator('.vvolume').boundingBox();
+      await page.mouse.click(slider.x + slider.width * 0.3, slider.y + slider.height / 2);
+      await page.waitForTimeout(200);
+      console.log(`volume slider at 30%: ${JSON.stringify(await state())}`);
+      await frame.locator('.vrate').click();
+      console.log(`speed: ${(await state()).rate}×, big play shown ${await frame.locator('.vbig:not([hidden])').count()}`);
+    }
   }
   await page.waitForTimeout(1200);
   await page.screenshot({ path: `/out/light-${name.replace('.', '-')}.png` });
