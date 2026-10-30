@@ -3,9 +3,10 @@ name: Build
 # Checks the plugin and builds its archive for Administration → Plugins → Install.
 #
 # - every push and "Run workflow": versions, fmt, clippy, tests, the page's
-#   JavaScript, the build; the archive photos.zip is kept as an artifact;
+#   JavaScript, the build; the artifact rc-image-<version> downloads as a zip
+#   that installs as it is;
 # - a tag v<version> (the version of manifest.toml, e.g. v0.1.0) also publishes
-#   a release with photos.zip and its SHA-256.
+#   a release with rc-image.zip and its SHA-256.
 #
 # Runs like the RustCloud repository: clux/muslrust:stable (Ubuntu with Rust),
 # plain git instead of actions/checkout; Node.js from apt only for the page check
@@ -81,23 +82,26 @@ jobs:
       - name: Page
         run: |
           node --check ui/app.js
-          node --check e2e/photos.mjs
+          node --check e2e/rc-image.mjs
 
       - name: Build
         run: |
           cargo build --release --locked --target wasm32-wasip2
-          mkdir -p dist/photos
-          cp manifest.toml dist/photos/
-          cp target/wasm32-wasip2/release/photos.wasm dist/photos/app.wasm
-          (cd dist && zip -qr photos.zip photos && sha256sum photos.zip > photos.zip.sha256)
-          ls -l dist/photos dist/photos.zip
-          cat dist/photos.zip.sha256
+          mkdir -p dist/rc-image
+          cp manifest.toml dist/rc-image/
+          cp target/wasm32-wasip2/release/rc_image.wasm dist/rc-image/app.wasm
+          (cd dist && zip -qr rc-image.zip rc-image && sha256sum rc-image.zip > rc-image.zip.sha256)
+          ls -l dist/rc-image dist/rc-image.zip
+          cat dist/rc-image.zip.sha256
 
+      # Forgejo hands out an artifact as a zip of its files: the folder's
+      # manifest.toml and app.wasm make that zip the plugin archive itself
+      # (a zip inside would be refused: "the archive has no manifest.toml").
       - name: Keep the archive
         uses: actions/upload-artifact@v3
         with:
-          name: photos-${{ env.VERSION }}
-          path: dist/photos.zip
+          name: rc-image-${{ env.VERSION }}
+          path: dist/rc-image/
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -112,11 +116,11 @@ jobs:
           id=$(curl ${CURL_K:-} -sS -H "$auth" "$api/releases/tags/$tag" | jq -r '.id // empty')
           if [ -z "$id" ]; then
             id=$(curl ${CURL_K:-} -sSf -X POST -H "$auth" -H 'content-type: application/json' \
-              -d "$(jq -n --arg tag "$tag" '{tag_name: $tag, name: $tag, body: "Install photos.zip on Administration → Plugins."}')" \
+              -d "$(jq -n --arg tag "$tag" '{tag_name: $tag, name: $tag, body: "Install rc-image.zip on Administration → Plugins."}')" \
               "$api/releases" | jq -r '.id')
           fi
           echo "release $tag: id $id"
-          for file in photos.zip photos.zip.sha256; do
+          for file in rc-image.zip rc-image.zip.sha256; do
             old=$(curl ${CURL_K:-} -sS -H "$auth" "$api/releases/$id/assets" | jq -r --arg n "$file" '.[] | select(.name == $n) | .id')
             [ -z "$old" ] || curl ${CURL_K:-} -sSf -X DELETE -H "$auth" "$api/releases/$id/assets/$old"
             curl ${CURL_K:-} -sSf -X POST -H "$auth" -F "attachment=@dist/$file" \

@@ -1,6 +1,6 @@
-# Фото — галерея для RustCloud
+# rc-image — галерея «Фото» для RustCloud
 
-Плагин [RustCloud](https://git.luklu.com/pi/rustcloud): фото и видео из папок пользователя —
+Плагин [RustCloud](https://git.luklu.com/pi/rustcloud) `rc-image` (в панели — «Фото»): фото и видео из папок пользователя —
 лента по дням и месяцам, фильтры, просмотр на всю страницу. Без нейросетей: только то, что есть
 в самих файлах.
 
@@ -31,7 +31,7 @@
 - Задачи ставит сервер — по событиям `file.granted`, `file.created`, `file.changed`,
   `file.deleted`, `file.moved` для `image/*` и `video/*`. Плагину не нужно обходить папки.
 - Метаданные и картинки делает ffmpeg сервера (`use.ffmpeg`): миниатюра 720×480 WebP,
-  превью 2560 px JPEG. Всё лежит в AppData пользователя (`.appdata/photos/`) и занимает его квоту —
+  превью 2560 px JPEG. Всё лежит в AppData пользователя (`.appdata/rc-image/`) и занимает его квоту —
   примерно 20–40 КБ на фото, у HEIC и RAW ещё 300–600 КБ на превью.
 - Индекс, миниатюры и оригиналы страница получает по ссылкам `links.create`: сервер отдаёт их сам,
   мимо плагина, с `ETag`, и браузер их кэширует.
@@ -48,30 +48,30 @@ RustCloud с API плагинов **0.2.11** (ссылки, HLS) и ffmpeg (`med
 rustup target add wasm32-wasip2
 cargo test
 cargo build --release --target wasm32-wasip2
-mkdir -p dist/photos && cp manifest.toml dist/photos/
-cp target/wasm32-wasip2/release/photos.wasm dist/photos/app.wasm
-(cd dist && zip -r photos.zip photos)
+mkdir -p dist/rc-image && cp manifest.toml dist/rc-image/
+cp target/wasm32-wasip2/release/rc_image.wasm dist/rc-image/app.wasm
+(cd dist && zip -r rc-image.zip rc-image)
 ```
 
-«Администрирование → Плагины → Установить плагин…» → `photos.zip` → включить.
+«Администрирование → Плагины → Установить плагин…» → `rc-image.zip` → включить.
 
 В Forgejo Actions это делает [.forgejo/workflows/build.yml](.forgejo/workflows/build.yml): на каждый
 push — проверка версий (`manifest.toml` = `Cargo.toml`, `api` = версия `wit/app.wit`), fmt, clippy,
-тесты, синтаксис JS, сборка; `photos.zip` остаётся артефактом запуска. Тег `v<версия манифеста>`
-(`v0.1.0`) ещё и публикует релиз с `photos.zip` и его SHA-256.
+тесты, синтаксис JS, сборка; артефакт `rc-image-<версия>` скачивается zip-архивом, который ставится как есть. Тег `v<версия манифеста>`
+(`v0.1.0`) ещё и публикует релиз с `rc-image.zip` и его SHA-256.
 
 `wit/app.wit` — копия `crates/plugin-api/wit/app.wit` сервера той версии, что в `manifest.toml`.
 
 ## Проверка в браузере
 
-[e2e/photos.mjs](e2e/photos.mjs) — на чистом сервере ставит плагин, создаёт папки с фото (JPEG
+[e2e/rc-image.mjs](e2e/rc-image.mjs) — на чистом сервере ставит плагин, создаёт папки с фото (JPEG
 с EXIF рисуются на canvas) и видео, ждёт задачи и проходит страницу в Chromium: лента, фильтры,
 просмотр, зум, HEIC, видео, тёмная тема, телефон. Снимки экрана — в `/out`.
 
 ```sh
-docker run --rm --network host -v $PWD/e2e:/e2e -v $PWD/dist/photos.zip:/e2e/photos.zip \
+docker run --rm --network host -v $PWD/e2e:/e2e -v $PWD/dist/rc-image.zip:/e2e/rc-image.zip \
   -v $PWD/out:/out -w /e2e mcr.microsoft.com/playwright:v1.64.1-noble \
-  sh -c 'npm i -s playwright@1.64.1 >/dev/null && node photos.mjs http://127.0.0.1:8090'
+  sh -c 'npm i -s playwright@1.64.1 >/dev/null && node rc-image.mjs http://127.0.0.1:8090'
 ```
 
 Образцы HEIC и видео, если они есть, кладутся в `e2e/samples/` (в git их нет).

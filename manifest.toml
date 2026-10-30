@@ -1,4 +1,4 @@
-id = "photos"
+id = "rc-image"
 version = "0.1.0"
 # The version of wit/app.wit: links, ranged reads and HLS need 0.2.11.
 api = "^0.2.11"
@@ -43,4 +43,4 @@ time = 4
 
 [ui]
 icon = "image"
-entry = "/app/photos"
+entry = "/app/rc-image"
