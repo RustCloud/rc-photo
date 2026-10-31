@@ -1124,6 +1124,120 @@ dialog .actions {
   gap: 8px;
 }
 
+/* ── Uploads ─────────────────────────────────────────── */
+.drop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgb(0 0 0 / 0.35);
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+}
+.drop[hidden] {
+  display: none;
+}
+.drop-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: min(420px, 100%);
+  padding: 36px 24px;
+  border: 2px dashed var(--accent);
+  border-radius: 18px;
+  background: var(--bg);
+  text-align: center;
+  box-shadow: var(--shadow);
+}
+.drop-card .icon {
+  width: 40px;
+  height: 40px;
+  color: var(--accent);
+}
+.drop-card b {
+  font-size: 17px;
+}
+.drop-card span {
+  color: var(--muted);
+}
+.uploads {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 40;
+  width: min(360px, calc(100% - 32px));
+  max-height: 50%;
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
+.uploads-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+.uploads-head > .icon {
+  color: var(--accent);
+}
+.uploads-head .spacer {
+  flex: 1;
+}
+.uploads-bar {
+  height: 4px;
+  margin-top: 8px;
+  border-radius: 2px;
+  background: linear-gradient(var(--accent), var(--accent)) 0 0 / var(--done) 100% no-repeat, var(--surface-2);
+}
+.uploads-note {
+  margin-top: 6px;
+  color: var(--muted);
+}
+.uploads-failed {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--danger);
+  font-size: 13px;
+}
+.uploads-failed li {
+  overflow-wrap: anywhere;
+}
+.uploads-failed .name {
+  color: var(--text);
+}
+.picks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: min(320px, 70vw);
+  margin: 4px 0 16px;
+}
+.pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.pick:hover {
+  background: var(--surface);
+}
+.pick:has(input:checked) {
+  background: var(--accent-soft);
+}
+.pick input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
 /* ── Small screens ───────────────────────────────────── */
 @media (max-width: 700px) {
   .topbar {

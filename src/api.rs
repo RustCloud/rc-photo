@@ -6,7 +6,9 @@
 //! | `POST /api/links`            | links to thumbnails, previews and originals          |
 //! | `GET /api/stream/<id>?mode=` | an HLS playlist of a video: `copy` or `h264`         |
 //! | `PUT /api/favorites/<id>`    | marks a favourite; `DELETE` unmarks it               |
-//! | `DELETE /api/files/<id>`     | deletes the file for good (there is no trash yet)    |
+//! | `DELETE /api/files/<id>`     | moves the file to the user's trash                   |
+//! | `POST /api/uploads`          | links to upload files to, past the plugin ([`upload`]) |
+//! | `PUT /api/upload-folder/<id>`| remembers the folder uploads went to last            |
 //! | `POST /api/rebuild`          | walks the folders again, drops what is no longer given |
 //!
 //! The index itself never passes through the plugin: the page fetches its
@@ -20,18 +22,24 @@ use crate::media::{self, preview_path, thumb_path};
 use crate::rustcloud::app::jobs::{self as queue, NewJob};
 use crate::rustcloud::app::links::{self, StreamMode, Target};
 use crate::rustcloud::app::{appdata, files, use_ffmpeg};
+use crate::upload::{self, UploadRequest};
 use crate::web::{error, json, ok, query_param, valid_id};
 use crate::Response;
 
 /// Most links one request asks for (the server's limit for `links.create`).
 const MAX_LINKS: usize = 1000;
 const FAVORITES: &str = "favorites.json";
+const UPLOAD_FOLDER: &str = "upload-folder.txt";
 
 pub fn handle(method: &str, path: &str, query: &str, body: &[u8]) -> Response {
     match (method, path) {
         ("GET", "/state") => state(),
         ("POST", "/links") => match serde_json::from_slice::<LinksRequest>(body) {
             Ok(request) => links_for(&request.items),
+            Err(err) => error(400, &err.to_string()),
+        },
+        ("POST", "/uploads") => match serde_json::from_slice::<UploadRequest>(body) {
+            Ok(request) => upload::links_for(&request),
             Err(err) => error(400, &err.to_string()),
         },
         ("POST", "/rebuild") => rebuild(),
@@ -45,6 +53,12 @@ pub fn handle(method: &str, path: &str, query: &str, body: &[u8]) -> Response {
             if let Some(id) = path.strip_prefix("/files/") {
                 return match method {
                     "DELETE" => delete(id),
+                    _ => error(405, "method not allowed"),
+                };
+            }
+            if let Some(id) = path.strip_prefix("/upload-folder/") {
+                return match method {
+                    "PUT" => remember_upload_folder(id),
                     _ => error(405, "method not allowed"),
                 };
             }
@@ -92,6 +106,7 @@ fn state() -> Response {
         "shards": shard_links,
         "progress": progress,
         "favorites": favorites(),
+        "uploadFolder": appdata::read(UPLOAD_FOLDER).ok().and_then(|id| String::from_utf8(id).ok()),
         "ffmpeg": use_ffmpeg::get_capabilities().available,
     }))
 }
@@ -183,7 +198,18 @@ fn set_favorite(id: &str, on: bool) -> Result<Vec<String>, appdata::Error> {
     Ok(ids)
 }
 
-/// Deletes a user's file. The server doesn't wake the plugin for its own
+/// The page can't keep it: its sandbox has no storage of its own.
+fn remember_upload_folder(id: &str) -> Response {
+    if !valid_id(id) {
+        return error(400, "not a folder id");
+    }
+    match appdata::write(UPLOAD_FOLDER, id.as_bytes()) {
+        Ok(_) => ok(json!({})),
+        Err(err) => error(500, &format!("{err:?}")),
+    }
+}
+
+/// Moves a user's file to their trash. The server doesn't wake the plugin for its own
 /// changes, so a `media` job is added here: it finds the file gone and takes
 /// it out of the index with its pictures (only jobs write the index).
 fn delete(id: &str) -> Response {

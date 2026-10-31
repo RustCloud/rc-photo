@@ -3,7 +3,7 @@
 // The server instantiates the app for each request to its routes
 // (`/app/<id>/...`) and calls `handle`. The app reaches the server only
 // through the interfaces it imports here; everything else is denied.
-package rustcloud:app@0.2.11;
+package rustcloud:app@0.2.12;
 
 interface types {
     /// An HTTP request to the app's routes.
@@ -266,6 +266,17 @@ interface links {
     /// piece of fragmented MP4 when the player asks for it. Needs
     /// `use.ffmpeg`; otherwise, or for a file that is no video, `other`.
     video-stream: func(target: target, mode: stream-mode) -> result<string, error>;
+
+    /// A link the app's page uploads one file to (since 0.2.12): it `POST`s
+    /// the file's bytes as the body to `/api/v1/app-links/…` and gets the
+    /// new file as JSON (`201`). The file goes to the server as a stream,
+    /// never through the app: only the user's quota and the server's upload
+    /// limit bound its size. `folder` is a folder the user gave the app to
+    /// change; `name` must be free there unless `overwrite`. A link serves
+    /// one upload, which must start within 15 minutes; a failed upload may
+    /// be tried again. `not-found` for a folder the app can't see, `other`
+    /// when it may only read it or the name is invalid or taken.
+    upload: func(folder: string, name: string, overwrite: bool) -> result<string, error>;
 }
 
 /// HTTP requests to other servers (since 0.2.3): only to the addresses the

@@ -16,6 +16,7 @@ mod api;
 mod exif;
 mod index;
 mod media;
+mod upload;
 mod web;
 
 struct Photos;

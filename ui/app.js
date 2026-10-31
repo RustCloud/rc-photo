@@ -39,7 +39,7 @@
       folderName: 'Photos',
       chooseTitle: 'Show where your photos are',
       chooseHint:
-        'The gallery shows photos and videos from folders of your files. They stay where they are: the gallery only reads them.',
+        'The gallery shows photos and videos from folders of your files. They stay where they are.',
       chooseButton: 'Choose a folder',
       denied: 'The gallery needs a folder to show something.',
       removeHint: 'To remove a folder, take the access back in Settings → Apps with access, then Rebuild.',
@@ -50,13 +50,31 @@
       rebuildStarted: 'Rebuilding: the gallery walks its folders.',
       delete: 'Delete (Del)',
       deleteTitle: (name) => `Delete “${name}”?`,
-      deleteText: 'The file is deleted from your files for good: there is no trash yet.',
+      deleteText: 'The file goes to the trash of your files.',
       deleteButton: 'Delete',
       needWriteTitle: 'The gallery may only read this folder',
       needWriteText: (folder) =>
         `To delete files from “${folder}”, let the gallery change it. In the next window choose this folder again.`,
+      needWriteUploadText: (folder) =>
+        `To upload into “${folder}”, let the gallery change it. In the next window choose this folder again.`,
       allow: 'Continue',
       cancel: 'Cancel',
+      upload: 'Upload',
+      dropHint: 'Drop photos and videos here',
+      dropTo: (folder) => `They will go to “${folder}”`,
+      dropChoose: 'You choose the folder next',
+      uploadTitle: 'Where to upload?',
+      uploadButton: 'Upload',
+      uploading: (done, total) => `Uploading: ${done} of ${total}`,
+      uploaded: (n) => `Uploaded: ${n}`,
+      uploadSkipped: (n) => `Not photos or videos, skipped: ${n}`,
+      nothingToUpload: 'There are no photos or videos among these files.',
+      tooLarge: 'larger than the server allows',
+      noSpace: 'not enough space',
+      nameTaken: 'the name is taken',
+      readOnly: 'the folder is for reading only',
+      linkGone: 'the link has expired, try again',
+      networkError: 'the connection broke',
       nothingFound: 'Nothing found',
       nothingFoundHint: 'Try removing some of the filters.',
       emptyLibrary: 'No photos yet',
@@ -130,7 +148,7 @@
       folderName: 'Фото',
       chooseTitle: 'Покажите, где лежат фото',
       chooseHint:
-        'Галерея показывает фото и видео из папок ваших файлов. Файлы остаются на месте: галерея их только читает.',
+        'Галерея показывает фото и видео из папок ваших файлов. Файлы остаются на месте.',
       chooseButton: 'Выбрать папку',
       denied: 'Без доступа к папке галерее нечего показать.',
       removeHint: 'Убрать папку можно в «Настройки → Приложения с доступом», затем нажмите «Пересобрать».',
@@ -141,13 +159,31 @@
       rebuildStarted: 'Пересборка: галерея проходит по папкам.',
       delete: 'Удалить (Del)',
       deleteTitle: (name) => `Удалить «${name}»?`,
-      deleteText: 'Файл удалится из ваших файлов насовсем: корзины пока нет.',
+      deleteText: 'Файл попадёт в корзину ваших файлов.',
       deleteButton: 'Удалить',
       needWriteTitle: 'Галерея может только читать эту папку',
       needWriteText: (folder) =>
         `Чтобы удалять файлы из папки «${folder}», разрешите галерее её изменять. В следующем окне выберите эту же папку.`,
+      needWriteUploadText: (folder) =>
+        `Чтобы загружать в папку «${folder}», разрешите галерее её изменять. В следующем окне выберите эту же папку.`,
       allow: 'Продолжить',
       cancel: 'Отмена',
+      upload: 'Загрузить',
+      dropHint: 'Отпустите, чтобы загрузить фото и видео',
+      dropTo: (folder) => `Они попадут в папку «${folder}»`,
+      dropChoose: 'Папку выберете дальше',
+      uploadTitle: 'Куда загрузить?',
+      uploadButton: 'Загрузить',
+      uploading: (done, total) => `Загрузка: ${done} из ${total}`,
+      uploaded: (n) => `Загружено: ${n}`,
+      uploadSkipped: (n) => `Не фото и не видео, пропущено: ${n}`,
+      nothingToUpload: 'Среди этих файлов нет фото и видео.',
+      tooLarge: 'больше, чем разрешает сервер',
+      noSpace: 'не хватает места',
+      nameTaken: 'имя занято',
+      readOnly: 'папка только для чтения',
+      linkGone: 'ссылка устарела, попробуйте ещё раз',
+      networkError: 'оборвалась связь',
       nothingFound: 'Ничего не найдено',
       nothingFoundHint: 'Попробуйте убрать часть фильтров.',
       emptyLibrary: 'Фото пока нет',
@@ -206,6 +242,8 @@
     info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>',
     heart: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>',
     download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
+    upload: '<path d="M12 16V5M7 10l5-5 5 5M5 20h14"/>',
+    check: '<path d="m5 12 5 5 9-10"/>',
     trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
     play: '<path d="M8 5v14l11-7z"/>',
     pause: '<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>',
@@ -378,6 +416,8 @@
 
   let folders = [];
   let favorites = new Set();
+  /** The folder uploads went to last, kept by the plugin. */
+  let uploadFolderId = null;
   let progress = {};
   let ffmpeg = true;
   let loaded = false;
@@ -439,10 +479,25 @@
     return 'square';
   }
 
+  /** A shard was rewritten after its link was made: that link is closed. */
+  class ShardChanged extends Error {}
+
   async function loadState() {
+    // A job may rewrite a shard between the links and the fetch: then again.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await loadStateOnce();
+      } catch (e) {
+        if (!(e instanceof ShardChanged) || attempt === 3) throw e;
+      }
+    }
+  }
+
+  async function loadStateOnce() {
     const state = await api('GET', '/state');
     folders = state.folders;
     favorites = new Set(state.favorites);
+    uploadFolderId = state.uploadFolder ?? null;
     progress = state.progress || {};
     ffmpeg = state.ffmpeg;
     const next = new Map();
@@ -453,6 +508,7 @@
           return;
         }
         const response = await fetch(url);
+        if (response.status === 404) throw new ShardChanged('HTTP 404');
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         next.set(url, (await response.json()).map(prepare));
       }),
@@ -687,6 +743,7 @@
         icon('filter'),
         count ? h('span', { class: 'badge' }, count) : null,
       ),
+      folders.length ? iconButton('upload', t.upload, pickFiles) : null,
       folders.length ? iconButton('plus', t.addFolder, addFolder) : null,
       folders.length ? iconButton('more', t.rebuild, confirmRebuild) : null,
     );
@@ -1328,7 +1385,7 @@
 
   async function addFolder() {
     try {
-      // Writing is for deleting from the gallery; it never changes files.
+      // Writing is for uploading and deleting; the gallery never changes files.
       await rustcloud.requestAccess({ folder: t.folderName, write: true });
     } catch {
       if (!folders.length) {
@@ -1449,6 +1506,305 @@
     reload();
     return true;
   }
+
+  // ── Uploads ────────────────────────────────────────────────────────
+
+  // What the browser may not name a type for (RAW, HEIC, some videos).
+  const MEDIA_NAME =
+    /\.(jpe?g|png|webp|gif|avif|bmp|heic|heif|tiff?|cr2|cr3|nef|nrw|arw|srf|sr2|dng|raf|orf|rw2|pef|srw|x3f|mp4|m4v|mov|mkv|webm|avi|mts|m2ts|3gp|wmv|mpe?g)$/i;
+  const UPLOAD_ACCEPT = 'image/*,video/*,.heic,.heif,.cr2,.cr3,.nef,.arw,.dng,.raf,.orf,.rw2,.mkv,.mts';
+  // Files per request for links: a link must be used within 15 minutes.
+  const LINKS_AT_ONCE = 30;
+  const UPLOADS_AT_ONCE = 3;
+
+  function isMediaFile(file) {
+    if (file.name.startsWith('.') || file.type === 'image/svg+xml') return false;
+    return file.type.startsWith('image/') || file.type.startsWith('video/') || MEDIA_NAME.test(file.name);
+  }
+
+  function pickFiles() {
+    const input = h('input', { type: 'file', multiple: true, accept: UPLOAD_ACCEPT });
+    input.addEventListener('change', () => upload([...input.files].map((file) => ({ file, dir: '' }))));
+    input.click();
+  }
+
+  /** The files of a drop, with the folders they were in when folders were dropped. */
+  async function droppedFiles(dataTransfer) {
+    // Entries must be taken while the drop event lasts.
+    const entries = [...dataTransfer.items].map((item) => item.webkitGetAsEntry?.()).filter(Boolean);
+    if (!entries.length) return [...dataTransfer.files].map((file) => ({ file, dir: '' }));
+    const found = [];
+    const walk = async (entry, dir) => {
+      if (entry.isFile) {
+        found.push({ file: await new Promise((resolve, reject) => entry.file(resolve, reject)), dir });
+        return;
+      }
+      const reader = entry.createReader();
+      const path = dir ? `${dir}/${entry.name}` : entry.name;
+      // readEntries gives a part at a time, until an empty one.
+      for (;;) {
+        const part = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+        if (!part.length) break;
+        for (const child of part) await walk(child, path);
+      }
+    };
+    for (const entry of entries) await walk(entry, '');
+    return found;
+  }
+
+  /** The granted folder to upload into: asked when there are several. */
+  async function uploadFolder() {
+    if (!folders.length) await addFolder();
+    if (folders.length < 2) return folders[0] ?? null;
+    const chosen = folders.some((f) => f.id === uploadFolderId) ? uploadFolderId : folders[0].id;
+    const options = folders.map((folder) =>
+      h(
+        'label',
+        { class: 'pick' },
+        h('input', { type: 'radio', name: 'upload-folder', value: folder.id, checked: folder.id === chosen }),
+        icon('folder'),
+        folder.name,
+      ),
+    );
+    return new Promise((resolve) => {
+      let answer = null;
+      const yes = h('button', { class: 'btn primary', type: 'submit' }, t.uploadButton);
+      const cancel = h('button', { class: 'btn', type: 'button', onclick: () => dialog.close() }, t.cancel);
+      const form = h(
+        'form',
+        { method: 'dialog' },
+        h('h2', {}, t.uploadTitle),
+        h('div', { class: 'picks' }, options),
+        h('div', { class: 'actions' }, cancel, yes),
+      );
+      form.addEventListener('submit', () => {
+        const id = form.querySelector('input:checked')?.value;
+        answer = folders.find((f) => f.id === id) ?? null;
+        if (answer && id !== uploadFolderId) {
+          uploadFolderId = id;
+          api('PUT', `/upload-folder/${id}`).catch(() => {});
+        }
+      });
+      const dialog = h('dialog', {}, form);
+      dialog.addEventListener('close', () => {
+        dialog.remove();
+        resolve(answer);
+      });
+      document.body.append(dialog);
+      dialog.showModal();
+      yes.focus();
+    });
+  }
+
+  /** The uploads under way, and those done since the panel was last closed. */
+  const uploads = { total: 0, done: 0, bytes: 0, sent: 0, failed: [], skipped: 0, running: false };
+  const uploadsEl = h('div', { class: 'uploads', hidden: true, role: 'status' });
+  document.body.append(uploadsEl);
+  let uploadsHideTimer = null;
+
+  function clearUploads() {
+    Object.assign(uploads, { total: 0, done: 0, bytes: 0, sent: 0, failed: [], skipped: 0 });
+    drawUploads();
+  }
+
+  function drawUploads() {
+    clearTimeout(uploadsHideTimer);
+    const u = uploads;
+    if (!u.total && !u.skipped && !u.failed.length) {
+      uploadsEl.hidden = true;
+      return;
+    }
+    const head = u.running
+      ? [h('span', { class: 'spinner' }), h('b', {}, t.uploading(Math.min(u.done + 1, u.total), u.total))]
+      : [icon(u.failed.length ? 'alert' : 'check'), h('b', {}, t.uploaded(u.done - u.failed.length))];
+    const parts = [
+      h(
+        'div',
+        { class: 'uploads-head' },
+        ...head,
+        h('div', { class: 'spacer' }),
+        u.running ? null : iconButton('close', t.close, clearUploads),
+      ),
+      u.running ? h('div', { class: 'uploads-bar', style: `--done:${u.bytes ? (u.sent / u.bytes) * 100 : 0}%` }) : null,
+      u.skipped ? h('div', { class: 'uploads-note' }, t.uploadSkipped(u.skipped)) : null,
+      u.failed.length
+        ? h(
+            'ul',
+            { class: 'uploads-failed' },
+            u.failed.map(({ name, why }) => h('li', {}, h('span', { class: 'name' }, name), ` — ${why}`)),
+          )
+        : null,
+    ];
+    uploadsEl.replaceChildren(...parts.filter(Boolean));
+    uploadsEl.hidden = false;
+    // A clean finish goes away by itself.
+    if (!u.running && !u.failed.length && !u.skipped) uploadsHideTimer = setTimeout(clearUploads, 4000);
+  }
+
+  /** Why an upload failed, in words. */
+  function uploadError(status, code, message) {
+    if (code === 'FILE_TOO_LARGE') return t.tooLarge;
+    if (code === 'QUOTA_EXCEEDED') return t.noSpace;
+    if (code === 'NAME_TAKEN' || code === 'conflict') return t.nameTaken;
+    if (code === 'READ_ONLY') return t.readOnly;
+    if (code === 'LINK_NOT_FOUND') return t.linkGone;
+    if (status === 0) return t.networkError;
+    return message || `HTTP ${status}`;
+  }
+
+  /** Sends a file to its link; progress goes to `onProgress(bytes sent)`. */
+  function send(url, file, onProgress) {
+    return new Promise((resolve) => {
+      // XMLHttpRequest: fetch() tells nothing of an upload's progress.
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', url);
+      xhr.upload.onprogress = (event) => onProgress(event.loaded);
+      xhr.onload = () => {
+        let error = {};
+        try {
+          error = JSON.parse(xhr.responseText).error ?? {};
+        } catch {}
+        resolve({ ok: xhr.status === 201, status: xhr.status, code: error.code, message: error.message });
+      };
+      xhr.onerror = () => resolve({ ok: false, status: 0 });
+      xhr.send(file);
+    });
+  }
+
+  /** Links for a part of the files; a read-only folder is offered to be given again. Null if not. */
+  async function uploadLinks(folder, part) {
+    const items = part.map(({ file, dir }) => ({ dir, name: file.name }));
+    for (;;) {
+      try {
+        return (await api('POST', '/uploads', { folder: folder.id, items })).items;
+      } catch (e) {
+        if (e.code !== 'read_only') throw e;
+        if (!(await ask({ title: t.needWriteTitle, text: t.needWriteUploadText(folder.name), action: t.allow }))) {
+          return null;
+        }
+        try {
+          await rustcloud.requestAccess({ folder: folder.name, write: true });
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+
+  /** Uploads the photos and videos of `list` ({file, dir}) into a granted folder. */
+  async function upload(list) {
+    if (uploads.running) return;
+    const media = list.filter(({ file }) => isMediaFile(file));
+    if (!media.length) {
+      notice = t.nothingToUpload;
+      refresh();
+      return;
+    }
+    const folder = await uploadFolder();
+    if (!folder) return;
+    notice = '';
+    const u = uploads;
+    Object.assign(u, { total: media.length, done: 0, sent: 0, failed: [], skipped: list.length - media.length });
+    u.bytes = media.reduce((sum, { file }) => sum + file.size, 0);
+    u.running = true;
+    drawUploads();
+    const fail = (file, why) => {
+      u.failed.push({ name: file.name, why });
+      u.done++;
+      u.sent += file.size;
+    };
+    try {
+      for (let start = 0; start < media.length; start += LINKS_AT_ONCE) {
+        const part = media.slice(start, start + LINKS_AT_ONCE);
+        let answers;
+        try {
+          answers = await uploadLinks(folder, part);
+        } catch (e) {
+          answers = e;
+        }
+        if (!Array.isArray(answers)) {
+          // No links: the rest isn't sent.
+          const why = answers ? answers.message : t.readOnly;
+          for (const { file } of media.slice(start)) fail(file, why);
+          break;
+        }
+        const queue = part.map((item, i) => ({ ...item, answer: answers[i] }));
+        const worker = async () => {
+          for (let next = queue.shift(); next; next = queue.shift()) {
+            const { file, answer } = next;
+            if (!answer.url) {
+              fail(file, uploadError(400, answer.code, answer.error));
+              drawUploads();
+              continue;
+            }
+            const before = u.sent;
+            const progress = (sent) => {
+              u.sent = before + sent;
+              drawUploads();
+            };
+            let result = await send(answer.url, file, progress);
+            // A broken connection: the same link may be tried once more.
+            if (result.status === 0) result = await send(answer.url, file, progress);
+            u.sent = before;
+            if (result.ok) {
+              u.done++;
+              u.sent += file.size;
+            } else {
+              fail(file, uploadError(result.status, result.code, result.message));
+            }
+            drawUploads();
+          }
+        };
+        await Promise.all(Array.from({ length: UPLOADS_AT_ONCE }, worker));
+        // What came so far appears while the rest goes.
+        reload();
+      }
+    } finally {
+      u.running = false;
+      drawUploads();
+      reload();
+    }
+  }
+
+  // Files dropped anywhere on the page are uploaded. Pictures dragged inside
+  // the page are no files to upload.
+  const dropEl = h('div', { class: 'drop', hidden: true });
+  document.body.append(dropEl);
+  let draggingInside = false;
+  let dragDepth = 0;
+  const carriesFiles = (event) => !draggingInside && [...(event.dataTransfer?.types ?? [])].includes('Files');
+  document.addEventListener('dragstart', () => (draggingInside = true));
+  document.addEventListener('dragend', () => (draggingInside = false));
+  document.addEventListener('dragenter', (event) => {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    if (dragDepth++ > 0) return;
+    const where = folders.length === 1 ? t.dropTo(folders[0].name) : folders.length ? t.dropChoose : '';
+    dropEl.replaceChildren(
+      h('div', { class: 'drop-card' }, icon('upload'), h('b', {}, t.dropHint), where ? h('span', {}, where) : null),
+    );
+    dropEl.hidden = false;
+  });
+  document.addEventListener('dragover', (event) => {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'copy';
+  });
+  document.addEventListener('dragleave', (event) => {
+    if (!carriesFiles(event) || --dragDepth > 0) return;
+    dragDepth = 0;
+    dropEl.hidden = true;
+  });
+  document.addEventListener('drop', async (event) => {
+    if (!carriesFiles(event)) return;
+    event.preventDefault();
+    dragDepth = 0;
+    dropEl.hidden = true;
+    upload(await droppedFiles(event.dataTransfer));
+  });
+  addEventListener('beforeunload', (event) => {
+    if (uploads.running) event.preventDefault();
+  });
 
   // ── Viewer ─────────────────────────────────────────────────────────
 
@@ -2136,6 +2492,7 @@
         const url = await link('original', entry);
         if (!url) throw new Error('not found');
         const response = await fetch(url);
+        if (response.status === 404) throw new ShardChanged('HTTP 404');
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const blobUrl = URL.createObjectURL(await response.blob());
         const anchor = h('a', { href: blobUrl, download: entry.name });
