@@ -3,7 +3,7 @@
 // browser — timeline, filters, viewer — with screenshots in /out.
 //
 //   node rc-photo.mjs <base url>      (in mcr.microsoft.com/playwright, /e2e = this folder)
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { chromium } from 'playwright';
 
 const base = process.argv[2];
@@ -254,6 +254,7 @@ async function look(colorScheme, prefix) {
   const page = await context.newPage();
   page.on('console', (m) => m.type() === 'error' && errors.push(`${prefix}: ${m.text()}`));
   page.on('pageerror', (e) => errors.push(`${prefix}: ${e.message}`));
+  page.on('response', (r) => r.status() >= 400 && errors.push(`${prefix}: ${r.status()} ${r.request().method()} ${r.url().replace(base, '').slice(0, 80)}`));
   await page.goto('/#/app/rc-photo');
   const frame = page.frameLocator('iframe');
   await frame.locator('.tile img.loaded').first().waitFor({ timeout: 30_000 });
@@ -440,41 +441,51 @@ for (const [node, write] of [[cameraFolder, true], [archiveFolder, false]]) {
 }
 await page.reload();
 await frame.locator('.tile img.loaded').first().waitFor({ timeout: 30_000 });
-const appFrame = page.frames().find((f) => f !== page.mainFrame() && f.url().includes('/app/rc-photo'));
-const drop = (names, { bigMiB = 0, leave = false } = {}) =>
-  appFrame.evaluate(
-    async ({ names, bigMiB, leave }) => {
-      const canvas = document.createElement('canvas');
-      canvas.width = 1200;
-      canvas.height = 800;
-      const g = canvas.getContext('2d');
-      g.fillStyle = '#2b6';
-      g.fillRect(0, 0, 1200, 800);
-      g.fillStyle = '#fff';
-      g.font = 'bold 90px sans-serif';
-      g.fillText('dropped', 300, 420);
-      const jpeg = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.9));
-      const data = new DataTransfer();
-      for (const name of names) {
-        if (name.endsWith('.txt')) data.items.add(new File(['not a photo'], name, { type: 'text/plain' }));
-        // A JPEG with zeros after its end: still a picture, just large.
-        else if (name.startsWith('big')) data.items.add(new File([jpeg, new Uint8Array(bigMiB << 20)], name, { type: 'image/jpeg' }));
-        else data.items.add(new File([jpeg], name, { type: 'image/jpeg' }));
-      }
-      const fire = (type) => document.body.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: data }));
-      fire('dragenter');
-      fire('dragover');
-      if (leave) window.__dragged = data;
-      else fire('drop');
-    },
-    { names, bigMiB, leave },
-  );
-await drop(['x.jpg'], { leave: true });
+// Real drags from the OS through the browser (CDP), not a DataTransfer made in
+// the page: the sandboxed page may not read files the way a made one lets it.
+const dropped = await droppedJpeg();
+/** A green JPEG drawn by the page. */
+async function droppedJpeg() {
+  const app = page.frames().find((f) => f !== page.mainFrame() && f.url().includes('/app/rc-photo'));
+  const dataUrl = await app.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1200;
+    canvas.height = 800;
+    const g = canvas.getContext('2d');
+    g.fillStyle = '#2b6';
+    g.fillRect(0, 0, 1200, 800);
+    g.fillStyle = '#fff';
+    g.font = 'bold 90px sans-serif';
+    g.fillText('dropped', 300, 420);
+    return canvas.toDataURL('image/jpeg', 0.9);
+  });
+  return Buffer.from(dataUrl.split(',')[1], 'base64');
+}
+mkdirSync('/tmp/drop/Поход', { recursive: true });
+const dropFile = (name, bigMiB = 0) => {
+  const path = `/tmp/drop/${name}`;
+  if (name.endsWith('.txt')) writeFileSync(path, 'not a photo');
+  // A JPEG with zeros after its end: still a picture, just large.
+  else writeFileSync(path, Buffer.concat([dropped, Buffer.alloc(bigMiB << 20)]));
+  return path;
+};
+writeFileSync('/tmp/drop/Поход/hike.jpg', dropped);
+const cdp = await page.context().newCDPSession(page);
+const frameBox = await page.locator('iframe').boundingBox();
+const at = { x: frameBox.x + frameBox.width / 2, y: frameBox.y + frameBox.height / 2 };
+const drag = async (paths, types) => {
+  const data = { items: [], files: paths, dragOperationsMask: 1 };
+  for (const type of types) await cdp.send('Input.dispatchDragEvent', { type, ...at, data });
+};
+const drop = (paths) => drag(paths, ['dragEnter', 'dragOver', 'drop']);
+await drag([dropFile('x.jpg')], ['dragEnter', 'dragOver']);
 await page.waitForTimeout(300);
+console.log(`drop overlay while dragging: ${(await frame.locator('.drop:not([hidden])').count()) ? 'shown' : 'missing'}`);
 await page.screenshot({ path: '/out/light-drop.png' });
-await appFrame.evaluate(() => document.body.dispatchEvent(new DragEvent('dragleave', { bubbles: true, dataTransfer: window.__dragged })));
-console.log(`drop overlay after leaving: ${(await frame.locator('.drop:not([hidden])').count()) ? 'still shown' : 'gone'}`);
-await drop(['drop-1.jpg', 'big.jpg', 'readme.txt'], { bigMiB: 40 });
+await cdp.send('Input.dispatchDragEvent', { type: 'dragOver', x: 5, y: 5, data: { items: [], files: [dropFile('x.jpg')], dragOperationsMask: 1 } });
+await drag([dropFile('x.jpg')], ['dragCancel']);
+console.log(`drop overlay after leaving the page: ${(await frame.locator('.drop:not([hidden])').count()) ? 'still shown' : 'gone'}`);
+await drop([dropFile('drop-1.jpg'), dropFile('big.jpg', 40), dropFile('readme.txt')]);
 await frame.locator('dialog[open] h2', { hasText: 'Куда загрузить' }).waitFor({ timeout: 10_000 });
 console.log(`upload picker: ${(await frame.locator('dialog[open] .pick').allInnerTexts()).join(', ')}`);
 await page.screenshot({ path: '/out/light-upload-pick.png' });
@@ -485,11 +496,20 @@ console.log(`upload panel: "${(await frame.locator('.uploads').innerText()).repl
 await page.screenshot({ path: '/out/light-uploaded.png' });
 await frame.locator('.uploads .icon-btn').click();
 // Again: the folder is remembered, the name is taken.
-await drop(['drop-1.jpg']);
+await drop([dropFile('drop-1.jpg')]);
 await frame.locator('dialog[open] .pick:has(input:checked)', { hasText: 'Камера' }).waitFor({ timeout: 10_000 });
 await frame.locator('dialog[open]').getByRole('button', { name: 'Загрузить' }).click();
 await frame.locator('.uploads', { hasText: 'Загружено: 1' }).waitFor({ timeout: 30_000 });
-// A dropped folder keeps its subfolders; a read-only folder is refused.
+await frame.locator('.uploads .icon-btn').click();
+// A dropped folder: its files with the subfolder, or a notice why not.
+await drop(['/tmp/drop/Поход']);
+await frame.locator('dialog[open] .pick:has(input:checked), .notice', { hasText: /Камера|папки/ }).first().waitFor({ timeout: 10_000 });
+if (await frame.locator('dialog[open]').count()) {
+  await frame.locator('dialog[open]').getByRole('button', { name: 'Загрузить' }).click();
+  await frame.locator('.uploads', { hasText: 'Загружено: 1' }).waitFor({ timeout: 30_000 });
+  console.log('folder drop: uploaded');
+} else console.log(`folder drop: "${await frame.locator('.notice', { hasText: 'папки' }).innerText()}"`);
+// Subfolders through the API; a read-only folder is refused.
 const nested = await json(
   await api.post('/app/rc-photo/api/uploads', { headers: H, data: { folder: cameraFolder, items: [{ dir: 'Поездка/День 1', name: 'nested.jpg' }] } }),
   'upload links',

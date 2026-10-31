@@ -78,6 +78,8 @@
       uploaded: (n) => `Uploaded: ${n}`,
       uploadSkipped: (n) => `Not photos or videos, skipped: ${n}`,
       nothingToUpload: 'There are no photos or videos among these files.',
+      foldersRefused: 'The browser does not let the page read dropped folders: choose their files with “Upload”.',
+      dropFailed: (why) => `The dropped files could not be taken: ${why}`,
       tooLarge: 'larger than the server allows',
       noSpace: 'not enough space',
       nameTaken: 'the name is taken',
@@ -196,6 +198,8 @@
       uploaded: (n) => `Загружено: ${n}`,
       uploadSkipped: (n) => `Не фото и не видео, пропущено: ${n}`,
       nothingToUpload: 'Среди этих файлов нет фото и видео.',
+      foldersRefused: 'Браузер не даёт странице прочитать перетащенные папки: выберите их файлы кнопкой «Загрузить».',
+      dropFailed: (why) => `Не удалось взять перетащенные файлы: ${why}`,
       tooLarge: 'больше, чем разрешает сервер',
       noSpace: 'не хватает места',
       nameTaken: 'имя занято',
@@ -1832,15 +1836,36 @@
     input.click();
   }
 
-  /** The files of a drop, with the folders they were in when folders were dropped. */
-  async function droppedFiles(dataTransfer) {
-    // Entries must be taken while the drop event lasts.
-    const entries = [...dataTransfer.items].map((item) => item.webkitGetAsEntry?.()).filter(Boolean);
-    if (!entries.length) return [...dataTransfer.files].map((file) => ({ file, dir: '' }));
-    const found = [];
+  /**
+   * What a drop carries, taken while its event lasts (the lists are emptied
+   * after it): the files, and the folders' entries when folders were dropped.
+   */
+  function takeDrop(dataTransfer) {
+    const dirs = [];
+    for (const item of dataTransfer.items ?? []) {
+      try {
+        const entry = item.webkitGetAsEntry?.();
+        if (entry?.isDirectory) dirs.push(entry);
+      } catch {
+        // No entries here: the files are enough.
+      }
+    }
+    const dirNames = new Set(dirs.map((dir) => dir.name));
+    const files = [...dataTransfer.files].filter((file) => !(dirNames.has(file.name) && !file.type));
+    return { files, dirs };
+  }
+
+  /**
+   * The files of a drop ({file, dir}), the ones inside dropped folders too.
+   * A sandboxed page may not be let read folders: then `foldersRefused`.
+   */
+  async function droppedFiles({ files, dirs }) {
+    const found = files.map((file) => ({ file, dir: '' }));
+    if (!dirs.length) return { found, foldersRefused: false };
+    const inFolders = [];
     const walk = async (entry, dir) => {
       if (entry.isFile) {
-        found.push({ file: await new Promise((resolve, reject) => entry.file(resolve, reject)), dir });
+        inFolders.push({ file: await new Promise((resolve, reject) => entry.file(resolve, reject)), dir });
         return;
       }
       const reader = entry.createReader();
@@ -1852,8 +1877,12 @@
         for (const child of part) await walk(child, path);
       }
     };
-    for (const entry of entries) await walk(entry, '');
-    return found;
+    try {
+      for (const entry of dirs) await walk(entry, '');
+    } catch {
+      return { found, foldersRefused: true };
+    }
+    return { found: found.concat(inFolders), foldersRefused: false };
   }
 
   /** The granted folder to upload into: asked when there are several. */
@@ -1995,18 +2024,21 @@
     }
   }
 
-  /** Uploads the photos and videos of `list` ({file, dir}) into a granted folder. */
-  async function upload(list) {
+  /**
+   * Uploads the photos and videos of `list` ({file, dir}) into a granted
+   * folder; `note` is shown meanwhile (what the drop couldn't give).
+   */
+  async function upload(list, note = '') {
     if (uploads.running) return;
     const media = list.filter(({ file }) => isMediaFile(file));
     if (!media.length) {
-      notice = t.nothingToUpload;
+      notice = note || t.nothingToUpload;
       refresh();
       return;
     }
     const folder = await uploadFolder();
     if (!folder) return;
-    notice = '';
+    notice = note;
     const u = uploads;
     Object.assign(u, { total: media.length, done: 0, sent: 0, failed: [], skipped: list.length - media.length });
     u.bytes = media.reduce((sum, { file }) => sum + file.size, 0);
@@ -2104,7 +2136,14 @@
     event.preventDefault();
     dragDepth = 0;
     dropEl.hidden = true;
-    upload(await droppedFiles(event.dataTransfer));
+    const dropped = takeDrop(event.dataTransfer);
+    try {
+      const { found, foldersRefused } = await droppedFiles(dropped);
+      await upload(found, foldersRefused ? t.foldersRefused : '');
+    } catch (e) {
+      notice = t.dropFailed(e?.message ?? String(e));
+      refresh();
+    }
   });
   addEventListener('beforeunload', (event) => {
     if (uploads.running) event.preventDefault();
