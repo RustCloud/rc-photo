@@ -371,6 +371,28 @@ for (const name of ['photo.heic', 'video.mp4', 'hevc.mkv']) {
 }
 await frame.locator('.search input').fill('');
 
+// Deleting from the viewer: the folder was given read-only, so the gallery
+// asks for writing first (the panel's dialog), then deletes.
+const victim = entries.find((e) => e.name === 'IMG_4101.jpg');
+await frame.locator('.search input').fill('IMG_4101');
+await page.waitForTimeout(600);
+await frame.locator('.tile').first().click();
+await frame.locator('.viewer .media img.full.loaded').waitFor({ timeout: 20_000 });
+await page.keyboard.press('Delete');
+await frame.locator('dialog[open]').getByRole('button', { name: 'Удалить' }).click();
+await frame.locator('dialog[open] h2', { hasText: 'только читать' }).waitFor({ timeout: 10_000 });
+await page.screenshot({ path: '/out/light-delete-ask-write.png' });
+await frame.locator('dialog[open]').getByRole('button', { name: 'Продолжить' }).click();
+await page.getByRole('button', { name: 'Разрешить' }).click();
+await page.waitForTimeout(1500);
+const gone = (await api.get(`/api/v1/files/${victim.id}`)).status();
+console.log(`delete from the viewer: file ${gone === 404 ? 'gone' : `still there (${gone})`}, viewers ${await frame.locator('.viewer').count()}, tiles for the search ${await frame.locator('.tile').count()}`);
+await page.keyboard.press('Escape');
+await frame.locator('.search input').fill('');
+await page.waitForTimeout(600);
+const grants = await json(await api.get('/api/v1/grants'), 'grants');
+console.log(`grants now: ${grants.map((g) => `${g.node.name}:${g.write ? 'rw' : 'r'}`).join(', ')}; folders in the page ${(await json(await api.get('/app/rc-photo/api/state', { headers: H }), 'state')).folders.length}`);
+
 // Dark theme, and a narrow window.
 const dark = await look('dark', 'dark');
 await dark.context.close();

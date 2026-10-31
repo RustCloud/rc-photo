@@ -6,6 +6,7 @@
 //! | `POST /api/links`            | links to thumbnails, previews and originals          |
 //! | `GET /api/stream/<id>?mode=` | an HLS playlist of a video: `copy` or `h264`         |
 //! | `PUT /api/favorites/<id>`    | marks a favourite; `DELETE` unmarks it               |
+//! | `DELETE /api/files/<id>`     | deletes the file for good (there is no trash yet)    |
 //! | `POST /api/rebuild`          | walks the folders again, drops what is no longer given |
 //!
 //! The index itself never passes through the plugin: the page fetches its
@@ -19,7 +20,7 @@ use crate::media::{self, preview_path, thumb_path};
 use crate::rustcloud::app::jobs::{self as queue, NewJob};
 use crate::rustcloud::app::links::{self, StreamMode, Target};
 use crate::rustcloud::app::{appdata, files, use_ffmpeg};
-use crate::web::{error, ok, query_param, valid_id};
+use crate::web::{error, json, ok, query_param, valid_id};
 use crate::Response;
 
 /// Most links one request asks for (the server's limit for `links.create`).
@@ -38,6 +39,12 @@ pub fn handle(method: &str, path: &str, query: &str, body: &[u8]) -> Response {
             if let Some(id) = path.strip_prefix("/stream/") {
                 return match method {
                     "GET" => stream(id, &query_param(query, "mode")),
+                    _ => error(405, "method not allowed"),
+                };
+            }
+            if let Some(id) = path.strip_prefix("/files/") {
+                return match method {
+                    "DELETE" => delete(id),
                     _ => error(405, "method not allowed"),
                 };
             }
@@ -155,6 +162,14 @@ fn favorite(id: &str, on: bool) -> Response {
     if !valid_id(id) {
         return error(400, "not a file id");
     }
+    match set_favorite(id, on) {
+        Ok(ids) => ok(json!({ "favorites": ids })),
+        Err(err) => error(500, &format!("{err:?}")),
+    }
+}
+
+/// Marks or unmarks a favourite; returns them all.
+fn set_favorite(id: &str, on: bool) -> Result<Vec<String>, appdata::Error> {
     let mut ids = favorites();
     let had = ids.iter().any(|known| known == id);
     if on && !had {
@@ -162,10 +177,34 @@ fn favorite(id: &str, on: bool) -> Response {
     } else if !on && had {
         ids.retain(|known| known != id);
     } else {
-        return ok(json!({ "favorites": ids }));
+        return Ok(ids);
     }
-    match appdata::write(FAVORITES, &serde_json::to_vec(&ids).expect("ids serialize")) {
-        Ok(_) => ok(json!({ "favorites": ids })),
+    appdata::write(FAVORITES, &serde_json::to_vec(&ids).expect("ids serialize"))?;
+    Ok(ids)
+}
+
+/// Deletes a user's file. The server doesn't wake the plugin for its own
+/// changes, so a `media` job is added here: it finds the file gone and takes
+/// it out of the index with its pictures (only jobs write the index).
+fn delete(id: &str) -> Response {
+    if !valid_id(id) {
+        return error(400, "not a file id");
+    }
+    match files::delete(id) {
+        // Already gone: the index catches up all the same.
+        Ok(()) | Err(files::Error::NotFound) => {}
+        // The folder was given for reading only: the page asks for more.
+        Err(files::Error::ReadOnly) => {
+            return json(403, json!({ "error": "the folder is given for reading only", "code": "read_only" }));
+        }
+        Err(err) => return files_error(err),
+    }
+    let forget = NewJob { kind: "media".into(), key: id.to_owned(), data: "deleted".into() };
+    if let Err(err) = queue::add(&[forget]) {
+        return error(500, &format!("{err:?}"));
+    }
+    match set_favorite(id, false) {
+        Ok(ids) => ok(json!({ "favorites": ids })),
         Err(err) => error(500, &format!("{err:?}")),
     }
 }
@@ -185,8 +224,11 @@ fn rebuild() -> Response {
     }
 }
 
+/// The folders the user gave the plugin, each once: a folder given again with
+/// write access has two grants.
 fn granted_folders() -> Result<Vec<files::Node>, files::Error> {
-    Ok(files::granted()?.into_iter().filter(|node| node.is_dir).collect())
+    let mut seen = std::collections::HashSet::new();
+    Ok(files::granted()?.into_iter().filter(|node| node.is_dir && seen.insert(node.id.clone())).collect())
 }
 
 fn files_error(err: files::Error) -> Response {

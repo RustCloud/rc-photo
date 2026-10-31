@@ -48,6 +48,14 @@
       rebuildText:
         'The gallery walks its folders again: it finds what was missed and drops what it may no longer read. Thumbnails already made stay.',
       rebuildStarted: 'Rebuilding: the gallery walks its folders.',
+      delete: 'Delete (Del)',
+      deleteTitle: (name) => `Delete “${name}”?`,
+      deleteText: 'The file is deleted from your files for good: there is no trash yet.',
+      deleteButton: 'Delete',
+      needWriteTitle: 'The gallery may only read this folder',
+      needWriteText: (folder) =>
+        `To delete files from “${folder}”, let the gallery change it. In the next window choose this folder again.`,
+      allow: 'Continue',
       cancel: 'Cancel',
       nothingFound: 'Nothing found',
       nothingFoundHint: 'Try removing some of the filters.',
@@ -131,6 +139,14 @@
       rebuildText:
         'Галерея заново пройдёт по папкам: найдёт пропущенное и уберёт то, к чему больше нет доступа. Готовые миниатюры останутся.',
       rebuildStarted: 'Пересборка: галерея проходит по папкам.',
+      delete: 'Удалить (Del)',
+      deleteTitle: (name) => `Удалить «${name}»?`,
+      deleteText: 'Файл удалится из ваших файлов насовсем: корзины пока нет.',
+      deleteButton: 'Удалить',
+      needWriteTitle: 'Галерея может только читать эту папку',
+      needWriteText: (folder) =>
+        `Чтобы удалять файлы из папки «${folder}», разрешите галерее её изменять. В следующем окне выберите эту же папку.`,
+      allow: 'Продолжить',
       cancel: 'Отмена',
       nothingFound: 'Ничего не найдено',
       nothingFoundHint: 'Попробуйте убрать часть фильтров.',
@@ -190,6 +206,7 @@
     info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>',
     heart: '<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>',
     download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
+    trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
     play: '<path d="M8 5v14l11-7z"/>',
     pause: '<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>',
     volume: '<path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/>',
@@ -310,7 +327,12 @@
     }
     const response = await rustcloud.fetch('/api' + path, init);
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    if (!response.ok) {
+      const error = new Error(data.error || `HTTP ${response.status}`);
+      error.status = response.status;
+      error.code = data.code;
+      throw error;
+    }
     return data;
   }
 
@@ -364,6 +386,8 @@
   let shardCache = new Map();
   /** Everything in the index that is in a granted folder. */
   let library = [];
+  /** Files deleted from the page, hidden until the index drops them. */
+  const deletedIds = new Set();
 
   /** Dates, labels and search text an entry is filtered and grouped by. */
   function prepare(entry) {
@@ -435,7 +459,11 @@
     );
     shardCache = next;
     const roots = new Set(folders.map((folder) => folder.id));
-    library = [...next.values()].flat().filter((entry) => roots.has(entry.root));
+    const all = [...next.values()].flat();
+    // Deleted here, but the index hasn't caught up yet.
+    const present = new Set(all.map((entry) => entry.id));
+    for (const id of deletedIds) if (!present.has(id)) deletedIds.delete(id);
+    library = all.filter((entry) => roots.has(entry.root) && !deletedIds.has(entry.id));
     loaded = true;
   }
 
@@ -1300,7 +1328,8 @@
 
   async function addFolder() {
     try {
-      await rustcloud.requestAccess({ folder: t.folderName });
+      // Writing is for deleting from the gallery; it never changes files.
+      await rustcloud.requestAccess({ folder: t.folderName, write: true });
     } catch {
       if (!folders.length) {
         notice = t.denied;
@@ -1353,38 +1382,72 @@
     if (viewer?.entry.id === entry.id) viewer.drawBar();
   }
 
-  function confirmRebuild() {
-    const dialog = h(
-      'dialog',
-      {},
-      h('h2', {}, t.rebuildTitle),
-      h('p', {}, t.rebuildText),
-      h(
-        'div',
-        { class: 'actions' },
-        h('button', { class: 'btn', onclick: () => dialog.close() }, t.cancel),
-        h(
-          'button',
-          {
-            class: 'btn primary',
-            onclick: async () => {
-              dialog.close();
-              try {
-                await api('POST', '/rebuild');
-                notice = t.rebuildStarted;
-              } catch (e) {
-                problem = t.error(e.message);
-              }
-              await reload();
-            },
-          },
-          t.rebuild,
-        ),
-      ),
-    );
-    dialog.addEventListener('close', () => dialog.remove());
-    document.body.append(dialog);
-    dialog.showModal();
+  /** Asks the user in a <dialog> (confirm() doesn't work in the sandbox); true for yes. */
+  function ask({ title, text, action, danger = false }) {
+    return new Promise((resolve) => {
+      let answer = false;
+      const yes = h('button', { class: `btn ${danger ? 'danger' : 'primary'}`, onclick: () => ((answer = true), dialog.close()) }, action);
+      const dialog = h(
+        'dialog',
+        {},
+        h('h2', {}, title),
+        h('p', {}, text),
+        h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => dialog.close() }, t.cancel), yes),
+      );
+      dialog.addEventListener('close', () => {
+        dialog.remove();
+        resolve(answer);
+      });
+      document.body.append(dialog);
+      dialog.showModal();
+      yes.focus();
+    });
+  }
+
+  async function confirmRebuild() {
+    if (!(await ask({ title: t.rebuildTitle, text: t.rebuildText, action: t.rebuild }))) return;
+    try {
+      await api('POST', '/rebuild');
+      notice = t.rebuildStarted;
+    } catch (e) {
+      problem = t.error(e.message);
+    }
+    await reload();
+  }
+
+  /**
+   * Deletes a file after asking; true if it is gone. A folder given for
+   * reading only is offered to be given again with writing.
+   */
+  async function deleteEntry(entry) {
+    if (!(await ask({ title: t.deleteTitle(entry.name), text: t.deleteText, action: t.deleteButton, danger: true }))) {
+      return false;
+    }
+    for (;;) {
+      try {
+        favorites = new Set((await api('DELETE', `/files/${entry.id}`)).favorites);
+        break;
+      } catch (e) {
+        if (e.code !== 'read_only') {
+          problem = t.error(e.message);
+          refresh();
+          return false;
+        }
+        const folder = folders.find((f) => f.id === entry.root)?.name ?? entry.folder.split('/')[0];
+        if (!(await ask({ title: t.needWriteTitle, text: t.needWriteText(folder), action: t.allow }))) return false;
+        try {
+          await rustcloud.requestAccess({ folder, write: true });
+        } catch {
+          return false;
+        }
+      }
+    }
+    deletedIds.add(entry.id);
+    library = library.filter((e) => e.id !== entry.id);
+    refresh();
+    // The job that drops it from the index is running: follow it.
+    reload();
+    return true;
   }
 
   // ── Viewer ─────────────────────────────────────────────────────────
@@ -1923,6 +1986,8 @@
     }
 
     key(event) {
+      // A dialog over the viewer has the keys (Escape closes only it).
+      if (document.querySelector('dialog[open]')) return;
       // A slider moves with its own arrow keys.
       if (event.target.matches?.('input[type=range]') && event.key.startsWith('Arrow')) return;
       if (event.target.closest?.('input:not([type=range]), textarea')) return;
@@ -1936,6 +2001,7 @@
       else if (event.key === 'ArrowRight') this.go(1);
       else if (event.key === 'i') this.toggleInfo();
       else if (event.key === 'f') toggleFavorite(this.entry);
+      else if (event.key === 'Delete') this.deleteCurrent();
       else return;
       event.preventDefault();
     }
@@ -1984,6 +2050,7 @@
           class: 'icon-btn' + (favorite ? ' on' : ''),
         }),
         iconButton('download', t.download, () => this.download()),
+        iconButton('trash', t.delete, () => this.deleteCurrent()),
         iconButton('info', t.info, () => this.toggleInfo()),
       );
     }
@@ -2048,6 +2115,20 @@
       );
     }
 
+    /** Deletes the file shown, then shows the next one (or closes). */
+    async deleteCurrent() {
+      const entry = this.entry;
+      this.video?.pause();
+      const gone = await deleteEntry(entry);
+      if (viewer !== this) return;
+      if (gone) {
+        this.list = this.list.filter((e) => e.id !== entry.id);
+        if (!this.list.length) return this.close(true);
+        this.show(Math.min(this.index, this.list.length - 1));
+      }
+      this.focus();
+    }
+
     async download() {
       const entry = this.entry;
       this.setStatus(t.downloading);
@@ -2073,12 +2154,14 @@
       removeEventListener('resize', this.onResize);
       clearTimeout(this.idleTimer);
       if (viewer === this) viewer = null;
-      const rect = now ? null : this.tileRect(this.entry);
+      // None when the last file of the list was just deleted.
+      const entry = this.entry;
+      const rect = now || !entry ? null : this.tileRect(entry);
       const finish = () => {
         this.cleanupMedia();
         this.root.remove();
         // Back to the tile, for the keyboard.
-        canvas.querySelector(`.tile[data-id="${this.entry.id}"]`)?.focus({ preventScroll: true });
+        if (entry) canvas.querySelector(`.tile[data-id="${entry.id}"]`)?.focus({ preventScroll: true });
       };
       if (now) return finish();
       this.root.classList.remove('open');

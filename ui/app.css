@@ -100,6 +100,14 @@ svg.icon {
 .btn.primary:hover {
   filter: brightness(1.08);
 }
+.btn.danger {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+.btn.danger:hover {
+  filter: brightness(1.08);
+}
 .btn.active {
   background: var(--accent-soft);
   border-color: var(--accent);
