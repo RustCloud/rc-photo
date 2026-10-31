@@ -395,6 +395,42 @@ await page.waitForTimeout(600);
 const grants = await json(await api.get('/api/v1/grants'), 'grants');
 console.log(`grants now: ${grants.map((g) => `${g.node.name}:${g.write ? 'rw' : 'r'}`).join(', ')}; folders in the page ${(await json(await api.get('/app/rc-photo/api/state', { headers: H }), 'state')).folders.length}`);
 
+// Selecting: a circle, Shift for a range, a whole day, Ctrl+A, Esc; then the
+// selection goes to favourites and to the trash.
+const tiles = frame.locator('.tile');
+const barText = async () => (await frame.locator('.topbar').innerText()).replace(/\s+/g, ' ').trim();
+await tiles.nth(0).hover();
+await tiles.nth(0).locator('.select-toggle').click();
+await tiles.nth(3).click({ modifiers: ['Shift'] });
+console.log(`select one, Shift+4th: "${await barText()}", tiles marked ${await frame.locator('.tile.selected').count()}`);
+await page.waitForTimeout(500);
+await page.mouse.move(5, 5);
+await page.waitForTimeout(400);
+await page.screenshot({ path: '/out/light-selection.png' });
+await page.keyboard.press('Escape');
+await frame.locator('.group-title.day, .day-inline').first().hover();
+await frame.locator('.day-select').first().click();
+console.log(`a day: "${await barText()}"`);
+await page.keyboard.press('Control+a');
+console.log(`Ctrl+A: "${await barText()}"`);
+await page.keyboard.press('Escape');
+console.log(`Esc: selection bar ${await frame.locator('.topbar.selecting').count()}`);
+const favoritesNow = async () => (await json(await api.get('/app/rc-photo/api/state', { headers: H }), 'state')).favorites.length;
+const favBefore = await favoritesNow();
+await tiles.nth(1).click({ modifiers: ['Control'] });
+await tiles.nth(2).click({ modifiers: ['Control'] });
+const chosen = await frame.locator('.tile.selected').evaluateAll((els) => els.map((el) => el.dataset.id));
+await frame.locator('.topbar.selecting').getByRole('button', { name: 'В избранное' }).click();
+await page.waitForTimeout(800);
+console.log(`favourites of the selection: ${favBefore} → ${await favoritesNow()}, hearts ${await frame.locator('.tile.selected .fav-toggle.on').count()}`);
+await page.keyboard.press('Delete');
+await frame.locator('dialog[open] h2', { hasText: 'Удалить 2 файла' }).waitFor({ timeout: 10_000 });
+await frame.locator('dialog[open]').getByRole('button', { name: 'Удалить' }).click();
+await frame.locator('.topbar.selecting').waitFor({ state: 'detached', timeout: 10_000 });
+const inTrash = [];
+for (const id of chosen) inTrash.push((await json(await api.get(`/api/v1/files/${id}`), 'file')).node.parent_id === trashId);
+console.log(`deleted the selection: in the trash ${inTrash.filter(Boolean).length} of ${chosen.length}, favourites ${await favoritesNow()}, tiles of them ${await frame.locator(chosen.map((id) => `.tile[data-id="${id}"]`).join(',')).count()}`);
+
 // Uploads: files dropped on the page go to the folder picked among the
 // granted ones, past the plugin (a 40 MB one too); a taken name gets a number.
 const cameraFolder = await folder(root, 'Камера');

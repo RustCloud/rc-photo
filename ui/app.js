@@ -60,6 +60,15 @@
       allow: 'Continue',
       cancel: 'Cancel',
       upload: 'Upload',
+      select: 'Select',
+      selected: (n) => `${n.toLocaleString('en')} selected`,
+      clearSelection: 'Clear selection (Esc)',
+      selectDay: 'Select the day',
+      selectAll: 'Select all (Ctrl+A)',
+      deleteManyTitle: (n) => `Delete ${n} ${n === 1 ? 'file' : 'files'}?`,
+      deleteManyText: 'The files go to the trash of your files.',
+      downloadingMany: (i, n) => `Downloading ${i} of ${n}…`,
+      deleteFailed: (n) => `Could not delete: ${n}`,
       dropHint: 'Drop photos and videos here',
       dropTo: (folder) => `They will go to “${folder}”`,
       dropChoose: 'You choose the folder next',
@@ -169,6 +178,15 @@
       allow: 'Продолжить',
       cancel: 'Отмена',
       upload: 'Загрузить',
+      select: 'Выбрать',
+      selected: (n) => `Выбрано: ${n.toLocaleString('ru')}`,
+      clearSelection: 'Снять выделение (Esc)',
+      selectDay: 'Выбрать день',
+      selectAll: 'Выбрать все (Ctrl+A)',
+      deleteManyTitle: (n) => `Удалить ${n} ${plural(n, 'файл', 'файла', 'файлов')}?`,
+      deleteManyText: 'Файлы попадут в корзину ваших файлов.',
+      downloadingMany: (i, n) => `Скачивание: ${i} из ${n}…`,
+      deleteFailed: (n) => `Не удалось удалить: ${n}`,
       dropHint: 'Отпустите, чтобы загрузить фото и видео',
       dropTo: (folder) => `Они попадут в папку «${folder}»`,
       dropChoose: 'Папку выберете дальше',
@@ -244,6 +262,7 @@
     download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
     upload: '<path d="M12 16V5M7 10l5-5 5 5M5 20h14"/>',
     check: '<path d="m5 12 5 5 9-10"/>',
+    selectAll: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="m8 12 3 3 5-6"/>',
     trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
     play: '<path d="M8 5v14l11-7z"/>',
     pause: '<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>',
@@ -641,6 +660,14 @@
 
   /** What the timeline shows, in order. */
   let shown = [];
+  /** The ids of the shown entries by day, for selecting a day. */
+  let dayIds = new Map();
+  /** Selected ids; while there are any, the top bar acts on them. */
+  const selected = new Set();
+  /** Where a Shift-click range starts: an index into `shown`. */
+  let selectAnchor = null;
+  /** What the selection bar says while it works (downloads). */
+  let selectionStatus = '';
 
   function applyFilters() {
     shown = library.filter((entry) => passes(entry));
@@ -686,6 +713,17 @@
   function refresh({ keepScroll = true } = {}) {
     const anchor = keepScroll ? anchorItem() : null;
     applyFilters();
+    dayIds = new Map();
+    for (const entry of shown) {
+      if (!dayIds.has(entry._day)) dayIds.set(entry._day, []);
+      dayIds.get(entry._day).push(entry.id);
+    }
+    // What is no longer shown is no longer selected.
+    if (selected.size) {
+      const visible = new Set(shown.map((entry) => entry.id));
+      for (const id of selected) if (!visible.has(id)) selected.delete(id);
+    }
+    canvas.classList.toggle('selecting', selected.size > 0);
     const searching = document.activeElement === searchInput;
     const caret = [searchInput.selectionStart, searchInput.selectionEnd];
     topEl = swap(topEl, topbar());
@@ -714,6 +752,7 @@
   }
 
   function topbar() {
+    if (selected.size) return selectionBar();
     const left = waiting();
     const count = activeFilters().length;
     return h(
@@ -1115,7 +1154,7 @@
           line = { block: { kind: 'row', top: y, height: DAY_HEIGHT + target, items: [], days: [] }, x: 0 };
           blocks.push(line.block);
         }
-        line.block.days.push({ left: SIDE + line.x, width: groupWidth, text: dayTitle(day) });
+        line.block.days.push({ left: SIDE + line.x, width: groupWidth, text: dayTitle(day), day });
         let x = SIDE + line.x;
         for (const item of items) {
           const w = item.aspect * target;
@@ -1127,7 +1166,7 @@
         continue;
       }
       closeLine();
-      blocks.push({ kind: 'day', top: y, height: DAY_HEIGHT, text: dayTitle(day) });
+      blocks.push({ kind: 'day', top: y, height: DAY_HEIGHT, text: dayTitle(day), day });
       y += DAY_HEIGHT;
       for (const row of justify(items, width, target)) {
         let x = SIDE;
@@ -1219,6 +1258,7 @@
       return h(
         'div',
         { class: `group-title ${block.kind}`, style: `top:${block.top}px;height:${block.height}px` },
+        block.day ? daySelect(block.day) : null,
         block.text,
       );
     }
@@ -1226,9 +1266,30 @@
       'div',
       { style: `position:absolute;left:0;right:0;top:${block.top}px;height:${block.height}px` },
       block.days.map((day) =>
-        h('div', { class: 'day-inline', title: day.text, style: `left:${day.left}px;width:${day.width}px` }, day.text),
+        h(
+          'div',
+          { class: 'day-inline', title: day.text, style: `left:${day.left}px;width:${day.width}px` },
+          daySelect(day.day),
+          day.text,
+        ),
       ),
       block.items.map(tile),
+    );
+  }
+
+  /** The circle before a day's title: selects all of the day, or none. */
+  function daySelect(day) {
+    const on = (dayIds.get(day) ?? []).every((id) => selected.has(id));
+    return h(
+      'button',
+      {
+        class: 'day-select' + (on && selected.size ? ' on' : ''),
+        'data-day': day,
+        title: t.selectDay,
+        'aria-label': t.selectDay,
+        onclick: () => selectDay(day),
+      },
+      icon('check'),
     );
   }
 
@@ -1241,9 +1302,15 @@
       reusable.delete(key);
       old.style.cssText = style;
       old.dataset.index = item.index;
+      old.classList.toggle('selected', selected.has(entry.id));
       return old;
     }
-    const open = () => openViewer(Number(el.dataset.index));
+    const index = () => Number(el.dataset.index);
+    // While something is selected, a click selects too.
+    const open = (event) => {
+      if (selected.size || event.shiftKey || event.ctrlKey || event.metaKey) toggleSelect(index(), event.shiftKey);
+      else openViewer(index());
+    };
     const el = h('div', {
       class: 'tile',
       role: 'button',
@@ -1258,10 +1325,11 @@
         if (viewer) return;
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
-          open();
+          open(event);
         }
       },
     });
+    el.classList.toggle('selected', selected.has(entry.id));
     if (entry.thumb) {
       const img = h('img', { alt: '', decoding: 'async', draggable: 'false' });
       img.addEventListener('load', () => img.classList.add('loaded'));
@@ -1277,6 +1345,22 @@
         h('span', { class: 'mark top-right' }, entry.duration ? duration(entry.duration) : null, icon('play')),
       );
     }
+    el.append(
+      h(
+        'button',
+        {
+          class: 'select-toggle',
+          title: t.select,
+          'aria-label': t.select,
+          tabindex: -1,
+          onclick: (event) => {
+            event.stopPropagation();
+            toggleSelect(index(), event.shiftKey);
+          },
+        },
+        icon('check'),
+      ),
+    );
     const favorite = favorites.has(entry.id);
     el.append(
       h(
@@ -1506,6 +1590,226 @@
     reload();
     return true;
   }
+
+  // ── Selection ──────────────────────────────────────────────────────
+
+  /** Selects or unselects one entry; with `range`, all from the last one clicked. */
+  function toggleSelect(index, range) {
+    const entry = shown[index];
+    if (!entry) return;
+    if (range && selectAnchor !== null && shown[selectAnchor]) {
+      const [from, to] = selectAnchor < index ? [selectAnchor, index] : [index, selectAnchor];
+      for (let i = from; i <= to; i++) selected.add(shown[i].id);
+    } else if (selected.has(entry.id)) {
+      selected.delete(entry.id);
+    } else {
+      selected.add(entry.id);
+    }
+    selectAnchor = index;
+    selectionChanged();
+  }
+
+  function selectDay(day) {
+    const ids = dayIds.get(day) ?? [];
+    const all = ids.every((id) => selected.has(id));
+    for (const id of ids) {
+      if (all) selected.delete(id);
+      else selected.add(id);
+    }
+    selectionChanged();
+  }
+
+  function selectAll() {
+    for (const entry of shown) selected.add(entry.id);
+    selectionChanged();
+  }
+
+  function clearSelection() {
+    selected.clear();
+    selectAnchor = null;
+    selectionStatus = '';
+    selectionChanged();
+  }
+
+  /** Marks the drawn tiles and days, and swaps the top bar. */
+  function selectionChanged() {
+    if (!selected.size) selectAnchor = null;
+    topEl = swap(topEl, topbar());
+    canvas.classList.toggle('selecting', selected.size > 0);
+    for (const el of canvas.querySelectorAll('.tile')) el.classList.toggle('selected', selected.has(el.dataset.id));
+    for (const el of canvas.querySelectorAll('.day-select')) {
+      const ids = dayIds.get(el.dataset.day) ?? [];
+      el.classList.toggle('on', selected.size > 0 && ids.every((id) => selected.has(id)));
+    }
+  }
+
+  function selectedEntries() {
+    return shown.filter((entry) => selected.has(entry.id));
+  }
+
+  function selectionBar() {
+    const entries = selectedEntries();
+    const allFavorite = entries.every((entry) => favorites.has(entry.id));
+    const busy = Boolean(selectionStatus);
+    return h(
+      'header',
+      { class: 'topbar selecting' },
+      iconButton('close', t.clearSelection, clearSelection),
+      h('h1', {}, t.selected(selected.size)),
+      busy ? h('span', { class: 'progress-chip' }, h('span', { class: 'spinner' }), selectionStatus) : null,
+      h('div', { class: 'spacer' }),
+      iconButton('selectAll', t.selectAll, selectAll),
+      iconButton('heart', allFavorite ? t.unfavorite : t.favorite, favoriteSelected, {
+        class: 'icon-btn' + (allFavorite ? ' on' : ''),
+      }),
+      iconButton('download', t.download, downloadSelected, { disabled: busy }),
+      iconButton('trash', t.delete, deleteSelected, { disabled: busy }),
+    );
+  }
+
+  /** Favourites all of the selection, or, when all are, none of it. */
+  async function favoriteSelected() {
+    const ids = selectedEntries().map((entry) => entry.id);
+    const on = !ids.every((id) => favorites.has(id));
+    for (const id of ids) {
+      if (on) favorites.add(id);
+      else favorites.delete(id);
+    }
+    refreshFavoriteMarks();
+    try {
+      for (let start = 0; start < ids.length; start += 1000) {
+        const result = await api('POST', '/favorites', { ids: ids.slice(start, start + 1000), on });
+        favorites = new Set(result.favorites);
+      }
+    } catch (e) {
+      problem = t.error(e.message);
+    }
+    refresh();
+    refreshFavoriteMarks();
+  }
+
+  function refreshFavoriteMarks() {
+    for (const button of canvas.querySelectorAll('.tile .fav-toggle')) {
+      const on = favorites.has(button.closest('.tile').dataset.id);
+      button.classList.toggle('on', on);
+      button.title = on ? t.unfavorite : t.favorite;
+      button.setAttribute('aria-label', button.title);
+    }
+    if (selected.size) topEl = swap(topEl, topbar());
+  }
+
+  /** Saves the original of an entry: through a blob, as the link is of another origin. */
+  async function downloadEntry(entry) {
+    const url = await link('original', entry);
+    if (!url) throw new Error('not found');
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const blobUrl = URL.createObjectURL(await response.blob());
+    const anchor = h('a', { href: blobUrl, download: entry.name });
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+  }
+
+  /** One file after another (the browser asks once whether to allow several). */
+  async function downloadSelected() {
+    const entries = selectedEntries();
+    try {
+      for (const [i, entry] of entries.entries()) {
+        selectionStatus = t.downloadingMany(i + 1, entries.length);
+        if (selected.size) topEl = swap(topEl, topbar());
+        await downloadEntry(entry);
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+    } catch (e) {
+      problem = t.error(e.message);
+    }
+    selectionStatus = '';
+    refresh();
+  }
+
+  /** Moves the selection to the trash after asking; read-only folders are offered to be given again. */
+  async function deleteSelected() {
+    const entries = selectedEntries();
+    if (!entries.length) return;
+    const confirmed = await ask({
+      title: t.deleteManyTitle(entries.length),
+      text: t.deleteManyText,
+      action: t.deleteButton,
+      danger: true,
+    });
+    if (!confirmed) return;
+    let pending = entries.map((entry) => entry.id);
+    const deleted = [];
+    let failed = 0;
+    let asked = false;
+    try {
+      while (pending.length) {
+        const readOnly = [];
+        for (let start = 0; start < pending.length; start += 1000) {
+          const result = await api('POST', '/files/delete', { ids: pending.slice(start, start + 1000) });
+          deleted.push(...result.deleted);
+          readOnly.push(...result.readOnly);
+          failed += result.failed.length;
+          favorites = new Set(result.favorites);
+        }
+        pending = [];
+        if (!readOnly.length || asked) {
+          failed += readOnly.length;
+          break;
+        }
+        // Once: the folders given for reading only, given again with writing.
+        asked = true;
+        const names = [
+          ...new Set(
+            entries
+              .filter((entry) => readOnly.includes(entry.id))
+              .map((entry) => folders.find((f) => f.id === entry.root)?.name ?? entry.folder.split('/')[0]),
+          ),
+        ];
+        if (!(await ask({ title: t.needWriteTitle, text: t.needWriteText(names.join(', ')), action: t.allow }))) {
+          failed += readOnly.length;
+          break;
+        }
+        try {
+          for (const folder of names) await rustcloud.requestAccess({ folder, write: true });
+          pending = readOnly;
+        } catch {
+          failed += readOnly.length;
+        }
+      }
+    } catch (e) {
+      problem = t.error(e.message);
+    }
+    for (const id of deleted) {
+      deletedIds.add(id);
+      selected.delete(id);
+    }
+    const gone = new Set(deleted);
+    library = library.filter((entry) => !gone.has(entry.id));
+    if (failed) problem = t.deleteFailed(failed);
+    selectionStatus = '';
+    refresh();
+    selectionChanged();
+    reload();
+  }
+
+  // Esc, Ctrl+A and Delete for the selection; the viewer and dialogs have their own keys.
+  document.addEventListener('keydown', (event) => {
+    if (viewer || document.querySelector('dialog[open]')) return;
+    if (event.target.closest?.('input, textarea, select')) return;
+    if (event.key === 'Escape' && selected.size) {
+      event.preventDefault();
+      clearSelection();
+    } else if ((event.ctrlKey || event.metaKey) && (event.key === 'a' || event.key === 'ф') && shown.length) {
+      event.preventDefault();
+      selectAll();
+    } else if (event.key === 'Delete' && selected.size && !selectionStatus) {
+      event.preventDefault();
+      deleteSelected();
+    }
+  });
 
   // ── Uploads ────────────────────────────────────────────────────────
 
@@ -2489,17 +2793,7 @@
       const entry = this.entry;
       this.setStatus(t.downloading);
       try {
-        const url = await link('original', entry);
-        if (!url) throw new Error('not found');
-        const response = await fetch(url);
-        if (response.status === 404) throw new ShardChanged('HTTP 404');
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const blobUrl = URL.createObjectURL(await response.blob());
-        const anchor = h('a', { href: blobUrl, download: entry.name });
-        document.body.append(anchor);
-        anchor.click();
-        anchor.remove();
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000);
+        await downloadEntry(entry);
         this.setStatus('');
       } catch (e) {
         this.setStatus(t.error(e.message));

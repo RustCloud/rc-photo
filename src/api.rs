@@ -6,13 +6,17 @@
 //! | `POST /api/links`            | links to thumbnails, previews and originals          |
 //! | `GET /api/stream/<id>?mode=` | an HLS playlist of a video: `copy` or `h264`         |
 //! | `PUT /api/favorites/<id>`    | marks a favourite; `DELETE` unmarks it               |
+//! | `POST /api/favorites`        | marks or unmarks many: `{ids, on}`                   |
 //! | `DELETE /api/files/<id>`     | moves the file to the user's trash                   |
+//! | `POST /api/files/delete`     | moves many to the trash: `{ids}`                     |
 //! | `POST /api/uploads`          | links to upload files to, past the plugin ([`upload`]) |
 //! | `PUT /api/upload-folder/<id>`| remembers the folder uploads went to last            |
 //! | `POST /api/rebuild`          | walks the folders again, drops what is no longer given |
 //!
 //! The index itself never passes through the plugin: the page fetches its
 //! shards by links, and the browser keeps them while they don't change.
+
+use std::collections::HashSet;
 
 use serde::Deserialize;
 use serde_json::json;
@@ -28,6 +32,8 @@ use crate::Response;
 
 /// Most links one request asks for (the server's limit for `links.create`).
 const MAX_LINKS: usize = 1000;
+/// Most files one request deletes or marks (the server's limit for `jobs.add`).
+const MAX_IDS: usize = 1000;
 const FAVORITES: &str = "favorites.json";
 const UPLOAD_FOLDER: &str = "upload-folder.txt";
 
@@ -40,6 +46,14 @@ pub fn handle(method: &str, path: &str, query: &str, body: &[u8]) -> Response {
         },
         ("POST", "/uploads") => match serde_json::from_slice::<UploadRequest>(body) {
             Ok(request) => upload::links_for(&request),
+            Err(err) => error(400, &err.to_string()),
+        },
+        ("POST", "/favorites") => match serde_json::from_slice::<FavoritesRequest>(body) {
+            Ok(request) => favorite_many(&request.ids, request.on),
+            Err(err) => error(400, &err.to_string()),
+        },
+        ("POST", "/files/delete") => match serde_json::from_slice::<IdsRequest>(body) {
+            Ok(request) => delete_many(&request.ids),
             Err(err) => error(400, &err.to_string()),
         },
         ("POST", "/rebuild") => rebuild(),
@@ -173,29 +187,56 @@ fn favorites() -> Vec<String> {
     appdata::read(FAVORITES).ok().and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default()
 }
 
+#[derive(Deserialize)]
+struct FavoritesRequest {
+    ids: Vec<String>,
+    on: bool,
+}
+
+#[derive(Deserialize)]
+struct IdsRequest {
+    ids: Vec<String>,
+}
+
 fn favorite(id: &str, on: bool) -> Response {
-    if !valid_id(id) {
-        return error(400, "not a file id");
+    favorite_many(&[id.to_owned()], on)
+}
+
+fn favorite_many(ids: &[String], on: bool) -> Response {
+    if let Err(response) = check_ids(ids) {
+        return response;
     }
-    match set_favorite(id, on) {
+    match set_favorites(ids, on) {
         Ok(ids) => ok(json!({ "favorites": ids })),
         Err(err) => error(500, &format!("{err:?}")),
     }
 }
 
-/// Marks or unmarks a favourite; returns them all.
-fn set_favorite(id: &str, on: bool) -> Result<Vec<String>, appdata::Error> {
+/// Marks or unmarks favourites; returns them all.
+fn set_favorites(changed: &[String], on: bool) -> Result<Vec<String>, appdata::Error> {
     let mut ids = favorites();
-    let had = ids.iter().any(|known| known == id);
-    if on && !had {
-        ids.push(id.to_owned());
-    } else if !on && had {
-        ids.retain(|known| known != id);
+    let before = ids.len();
+    if on {
+        let mut known: HashSet<String> = ids.iter().cloned().collect();
+        ids.extend(changed.iter().filter(|id| known.insert((*id).clone())).cloned());
     } else {
-        return Ok(ids);
+        let gone: HashSet<&String> = changed.iter().collect();
+        ids.retain(|id| !gone.contains(id));
     }
-    appdata::write(FAVORITES, &serde_json::to_vec(&ids).expect("ids serialize"))?;
+    if ids.len() != before {
+        appdata::write(FAVORITES, &serde_json::to_vec(&ids).expect("ids serialize"))?;
+    }
     Ok(ids)
+}
+
+fn check_ids(ids: &[String]) -> Result<(), Response> {
+    if ids.len() > MAX_IDS {
+        return Err(error(400, &format!("at most {MAX_IDS} files at once")));
+    }
+    if !ids.iter().all(|id| valid_id(id)) {
+        return Err(error(400, "not a file id"));
+    }
+    Ok(())
 }
 
 /// The page can't keep it: its sandbox has no storage of its own.
@@ -209,30 +250,75 @@ fn remember_upload_folder(id: &str) -> Response {
     }
 }
 
-/// Moves a user's file to their trash. The server doesn't wake the plugin for its own
-/// changes, so a `media` job is added here: it finds the file gone and takes
-/// it out of the index with its pictures (only jobs write the index).
+/// Moves a user's file to their trash.
 fn delete(id: &str) -> Response {
     if !valid_id(id) {
         return error(400, "not a file id");
     }
-    match files::delete(id) {
-        // Already gone: the index catches up all the same.
-        Ok(()) | Err(files::Error::NotFound) => {}
-        // The folder was given for reading only: the page asks for more.
-        Err(files::Error::ReadOnly) => {
-            return json(403, json!({ "error": "the folder is given for reading only", "code": "read_only" }));
+    match delete_files(&[id.to_owned()]) {
+        Ok(done) if !done.read_only.is_empty() => {
+            // The folder was given for reading only: the page asks for more.
+            json(403, json!({ "error": "the folder is given for reading only", "code": "read_only" }))
         }
-        Err(err) => return files_error(err),
+        Ok(done) => match done.failed.into_iter().next() {
+            Some((_, why)) => error(500, &why),
+            None => ok(json!({ "favorites": done.favorites })),
+        },
+        Err(response) => response,
     }
-    let forget = NewJob { kind: "media".into(), key: id.to_owned(), data: "deleted".into() };
-    if let Err(err) = queue::add(&[forget]) {
-        return error(500, &format!("{err:?}"));
+}
+
+/// Moves files to the trash, as many as it can: `deleted`, `readOnly` (in
+/// folders given for reading only), `failed`, and the favourites left.
+fn delete_many(ids: &[String]) -> Response {
+    if let Err(response) = check_ids(ids) {
+        return response;
     }
-    match set_favorite(id, false) {
-        Ok(ids) => ok(json!({ "favorites": ids })),
-        Err(err) => error(500, &format!("{err:?}")),
+    match delete_files(ids) {
+        Ok(done) => {
+            let failed: Vec<_> = done.failed.iter().map(|(id, why)| json!({ "id": id, "error": why })).collect();
+            ok(json!({
+                "deleted": done.deleted,
+                "readOnly": done.read_only,
+                "failed": failed,
+                "favorites": done.favorites,
+            }))
+        }
+        Err(response) => response,
     }
+}
+
+struct Deleted {
+    deleted: Vec<String>,
+    read_only: Vec<String>,
+    failed: Vec<(String, String)>,
+    favorites: Vec<String>,
+}
+
+/// The server doesn't wake the plugin for its own changes, so a `media` job
+/// is added for each file: it finds the file gone and takes it out of the
+/// index with its pictures (only jobs write the index).
+fn delete_files(ids: &[String]) -> Result<Deleted, Response> {
+    let mut done = Deleted { deleted: Vec::new(), read_only: Vec::new(), failed: Vec::new(), favorites: Vec::new() };
+    for id in ids {
+        match files::delete(id) {
+            // Already gone: the index catches up all the same.
+            Ok(()) | Err(files::Error::NotFound) => done.deleted.push(id.clone()),
+            Err(files::Error::ReadOnly) => done.read_only.push(id.clone()),
+            Err(files::Error::NoUser) => return Err(error(401, "not logged in")),
+            Err(err) => done.failed.push((id.clone(), format!("{err:?}"))),
+        }
+    }
+    let forget: Vec<NewJob> = done
+        .deleted
+        .iter()
+        .map(|id| NewJob { kind: "media".into(), key: id.clone(), data: "deleted".into() })
+        .collect();
+    if !forget.is_empty() {
+        queue::add(&forget).map_err(|err| error(500, &format!("{err:?}")))?;
+    }
+    done.favorites = set_favorites(&done.deleted, false).map_err(|err| error(500, &format!("{err:?}")))?;
+    Ok(done)
 }
 
 /// Walks the granted folders again and drops what is in no granted folder.
@@ -253,7 +339,7 @@ fn rebuild() -> Response {
 /// The folders the user gave the plugin, each once: a folder given again with
 /// write access has two grants.
 fn granted_folders() -> Result<Vec<files::Node>, files::Error> {
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     Ok(files::granted()?.into_iter().filter(|node| node.is_dir && seen.insert(node.id.clone())).collect())
 }
 
