@@ -5,7 +5,8 @@
 //! small JSON API ([`api`]). Background jobs ([`media`]) describe each file
 //! through the server's ffmpeg and keep an [index] in the user's AppData;
 //! thumbnails, originals and the index reach the page by links, past the
-//! plugin.
+//! plugin. If the user turns them on, [`faces`] finds faces through the
+//! server's neural networks and [`people`] groups them into people.
 
 // The bindings wit-bindgen generates have functions with many arguments.
 #![allow(clippy::too_many_arguments)]
@@ -14,9 +15,12 @@ wit_bindgen::generate!({ path: "wit", world: "app-with-jobs" });
 
 mod api;
 mod exif;
+mod faces;
 mod index;
 mod media;
+mod people;
 mod upload;
+mod vision;
 mod web;
 
 struct Photos;
@@ -47,6 +51,8 @@ impl Guest for Photos {
             Some("media") => media::run_media(&jobs),
             Some("scan") => media::run_scan(&jobs),
             Some("prune") => media::run_prune(&jobs),
+            Some("faces") => faces::run_faces(&jobs),
+            Some("people") => people::run_people(&jobs),
             _ => jobs.iter().map(|job| Outcome::Failed(format!("unknown kind {}", job.kind))).collect(),
         }
     }

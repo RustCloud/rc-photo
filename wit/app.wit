@@ -3,7 +3,7 @@
 // The server instantiates the app for each request to its routes
 // (`/app/<id>/...`) and calls `handle`. The app reaches the server only
 // through the interfaces it imports here; everything else is denied.
-package rustcloud:app@0.2.12;
+package rustcloud:app@0.2.13;
 
 interface types {
     /// An HTTP request to the app's routes.
@@ -214,7 +214,7 @@ interface limits {
         /// The app's own work; waiting for the server doesn't count.
         time-ms: u64,
         /// All of it, waiting for the server included; native tools
-        /// (`use-ffmpeg`) don't count.
+        /// (`use-ffmpeg`, `use-onnx`) don't count.
         wall-ms: u64,
     }
 
@@ -544,6 +544,170 @@ interface use-ffmpeg {
     thumbnail: func(source: source, options: picture-options) -> result<list<u8>, error>;
 }
 
+/// Neural networks in ONNX format, run by the server for the app (since
+/// 0.2.13; manifest `[permissions] use = ["onnx"]`, which the administrator
+/// approves as `use.onnx`). A model is a file of the app's storage, usually
+/// put there by `[[downloads]]`, named by its path. The server loads it into
+/// a confined process of its own at the first call and keeps it loaded
+/// while it is used: it is unloaded `keep-loaded-seconds` after its last run
+/// (see `capabilities`), so a batch over many files loads it once. Runs of
+/// one model wait for each other.
+///
+/// `run` takes and gives any tensors: pictures, sound, text (token ids the
+/// app made), embeddings. `image-tensor` and `audio-tensor` make the usual
+/// inputs from files without the app decoding them.
+interface use-onnx {
+    /// Which file a helper reads: one of the user's (by id, within what the
+    /// user gave the app), a file of the app's AppData, or of its storage.
+    variant source {
+        file(string),
+        appdata(string),
+        storage(string),
+    }
+
+    variant error {
+        /// A user's file or AppData, but the request has no logged-in user.
+        no-user,
+        /// The administrator didn't approve `use.onnx` for this app.
+        not-allowed,
+        /// No such model or file.
+        not-found,
+        /// No engine here, or the file has nothing the helper reads.
+        unsupported(string),
+        /// Tensors that don't fit the model or their own shape, helper
+        /// options out of bounds: the reason.
+        invalid-input(string),
+        /// All the models' processes are running: try again later (in a
+        /// job: `retry`).
+        busy,
+        timeout,
+        /// The model can't be loaded or failed, or a result is larger than
+        /// `data-bytes`: the reason.
+        failed(string),
+    }
+
+    /// Little-endian values, row by row (the last index changes fastest).
+    enum tensor-type { %f32, %f64, %i32, %i64, %i8, %u8, %bool }
+
+    record tensor {
+        dtype: tensor-type,
+        shape: list<u32>,
+        /// The values' bytes: their size times the product of `shape`.
+        /// `bool`: one byte, 0 or 1.
+        data: list<u8>,
+    }
+
+    record named-tensor {
+        /// The model's input or output.
+        name: string,
+        tensor: tensor,
+    }
+
+    /// An input or output as the model declares it.
+    record tensor-info {
+        name: string,
+        /// None: a type apps can't send or get (f16, strings…).
+        dtype: option<tensor-type>,
+        /// None for a dimension the model leaves open (a batch, a length);
+        /// none at all when the model doesn't even say how many there are
+        /// (often for outputs): the first run tells.
+        shape: option<list<option<u32>>>,
+    }
+
+    record model-info {
+        inputs: list<tensor-info>,
+        outputs: list<tensor-info>,
+    }
+
+    record capabilities {
+        available: bool,
+        /// "tract 0.23".
+        engine: option<string>,
+        /// How long a model stays loaded after its last run.
+        keep-loaded-seconds: u32,
+    }
+
+    /// How a picture fills the exact size of an image tensor.
+    enum image-fit {
+        /// Stretched to it.
+        stretch,
+        /// All of it, at the top left, the rest black ("letterbox"): the
+        /// scale is the smaller of width / picture width and height /
+        /// picture height.
+        inside,
+        /// It filled, centred, the rest cropped.
+        cover,
+    }
+
+    /// A part of a picture as shown, in its pixels.
+    record crop {
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    }
+
+    enum channels { rgb, bgr }
+
+    enum layout {
+        /// `[1, 3, height, width]`: a plane per colour (most models).
+        nchw,
+        /// `[1, height, width, 3]`.
+        nhwc,
+    }
+
+    record image-options {
+        /// 1–4096: the tensor's size.
+        width: u32,
+        height: u32,
+        fit: image-fit,
+        /// A part of the picture (a face found before); none: all of it.
+        crop: option<crop>,
+        channels: channels,
+        layout: layout,
+        /// Each value `v` (0–255) of colour `c` becomes
+        /// `(v - mean[c]) / std[c]`, colours in the order of `channels`:
+        /// `127.5`/`127.5` gives -1…1, `0`/`255` gives 0…1; ImageNet models
+        /// take mean 123.675, 116.28, 103.53 and std 58.395, 57.12, 57.375.
+        mean: tuple<f32, f32, f32>,
+        std: tuple<f32, f32, f32>,
+    }
+
+    /// A picture made a model's input.
+    record image-input {
+        /// f32, `[1, 3, height, width]` or `[1, height, width, 3]`.
+        tensor: tensor,
+        /// The picture's size as shown (turned as the camera was held),
+        /// before the crop: to map what the model found back onto it.
+        width: u32,
+        height: u32,
+    }
+
+    record audio-options {
+        /// Samples per second, 8000–48000: speech models take 16000.
+        rate: u32,
+        start-ms: u64,
+        /// None: to the end. At most `data-bytes` (`limits`) of samples
+        /// come at once (4 bytes each): ask for a long file in parts.
+        duration-ms: option<u64>,
+    }
+
+    /// What the engine is, here.
+    get-capabilities: func() -> capabilities;
+    /// What a model of the app's storage takes and gives; loads it.
+    get-model-info: func(model: string) -> result<model-info, error>;
+    /// Runs a model on one tensor per input (matched by name) and gives one
+    /// per output, in the model's order: at most `data-bytes` together.
+    run: func(model: string, inputs: list<named-tensor>) -> result<list<named-tensor>, error>;
+    /// A picture as a model's input: a photo of any format (HEIC and RAW
+    /// included, turned as shown), a frame of a video. Needs ffmpeg on the
+    /// server (not `use.ffmpeg`).
+    image-tensor: func(source: source, options: image-options) -> result<image-input, error>;
+    /// Sound as a model's input: f32 `[samples]`, mono, from music, a
+    /// recording or a video. Needs ffmpeg on the server.
+    audio-tensor: func(source: source, options: audio-options) -> result<tensor, error>;
+}
+
 world app {
     use types.{request, response, user};
 
@@ -558,6 +722,7 @@ world app {
     import storage;
     import jobs;
     import use-ffmpeg;
+    import use-onnx;
 
     /// Handles a request to the app's routes. `user` is none for requests
     /// without a session.
@@ -580,6 +745,7 @@ world app-with-jobs {
     import storage;
     import jobs;
     import use-ffmpeg;
+    import use-onnx;
 
     export handle: func(user: option<user>, request: request) -> response;
 

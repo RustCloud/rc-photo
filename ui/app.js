@@ -69,6 +69,35 @@
       deleteManyText: 'The files go to the trash of your files.',
       downloadingMany: (i, n) => `Downloading ${i} of ${n}…`,
       deleteFailed: (n) => `Could not delete: ${n}`,
+      people: 'People',
+      facesOffText: 'The server can find faces in your photos and group them by person. Faces stay in your own data of the plugin.',
+      facesOn: 'Find people',
+      facesAskTitle: 'Find people in photos?',
+      facesAskText:
+        'The server looks at every photo with a neural network and keeps a description of each face in your data of the plugin. Nobody else sees it; you can turn it off and delete it at any time.',
+      facesDownloading: 'The server is downloading the neural networks…',
+      facesNotAllowed: 'The administrator has not yet allowed the plugin neural networks (use.onnx).',
+      facesNoEngine: 'This server has no engine for neural networks.',
+      facesFailed: 'The neural networks could not be started.',
+      facesLooking: (n) => `Looking for faces: ${n} left`,
+      facesNone: 'No people yet: a person appears once their face is in a few photos.',
+      unnamed: 'No name',
+      showHidden: (n) => `Hidden: ${n}`,
+      hideHidden: 'Hide them again',
+      facesOff: 'Turn off',
+      facesForget: 'Delete face data',
+      facesForgetTitle: 'Delete what was found about faces?',
+      facesForgetText: 'Faces, people and their names are deleted, and faces are no longer looked for.',
+      personTitle: 'Who is this?',
+      personName: 'Name',
+      personHide: 'Hide this person',
+      save: 'Save',
+      mergeTitle: (name) => `Merge with “${name}”?`,
+      mergeText: 'There is a person with this name already. Their photos become one person.',
+      merge: 'Merge',
+      facesUnknown: (n) => `Faces without a person: ${n}`,
+      facesFound: (n) => plural(n, `${n} face`, `${n} faces`, `${n} faces`),
+      photosOf: (n) => plural(n, `${n} photo`, `${n} photos`, `${n} photos`),
       dropHint: 'Drop photos and videos here',
       dropTo: (folder) => `They will go to “${folder}”`,
       dropChoose: 'You choose the folder next',
@@ -189,6 +218,35 @@
       deleteManyText: 'Файлы попадут в корзину ваших файлов.',
       downloadingMany: (i, n) => `Скачивание: ${i} из ${n}…`,
       deleteFailed: (n) => `Не удалось удалить: ${n}`,
+      people: 'Люди',
+      facesOffText: 'Сервер может найти лица на ваших фото и сгруппировать их по людям. Данные о лицах остаются в ваших данных плагина.',
+      facesOn: 'Найти людей',
+      facesAskTitle: 'Искать людей на фото?',
+      facesAskText:
+        'Сервер просмотрит каждое фото нейросетью и сохранит описание каждого лица в ваших данных плагина. Их никто, кроме вас, не видит; распознавание можно выключить и всё удалить в любой момент.',
+      facesDownloading: 'Сервер загружает нейросети…',
+      facesNotAllowed: 'Администратор ещё не разрешил плагину нейросети (use.onnx).',
+      facesNoEngine: 'На этом сервере нет движка нейросетей.',
+      facesFailed: 'Не удалось запустить нейросети.',
+      facesLooking: (n) => `Ищу лица: осталось ${n}`,
+      facesNone: 'Людей пока нет: человек появится, когда его лицо найдётся на нескольких фото.',
+      unnamed: 'Без имени',
+      showHidden: (n) => `Скрытые: ${n}`,
+      hideHidden: 'Снова скрыть',
+      facesOff: 'Выключить',
+      facesForget: 'Удалить данные о лицах',
+      facesForgetTitle: 'Удалить всё найденное о лицах?',
+      facesForgetText: 'Лица, люди и их имена будут удалены, а лица больше не будут искаться.',
+      personTitle: 'Кто это?',
+      personName: 'Имя',
+      personHide: 'Скрыть этого человека',
+      save: 'Сохранить',
+      mergeTitle: (name) => `Объединить с «${name}»?`,
+      mergeText: 'Человек с таким именем уже есть. Его фото станут фото одного человека.',
+      merge: 'Объединить',
+      facesUnknown: (n) => `Лиц без человека: ${n}`,
+      facesFound: (n) => plural(n, `${n} лицо`, `${n} лица`, `${n} лиц`),
+      photosOf: (n) => plural(n, `${n} фото`, `${n} фото`, `${n} фото`),
       dropHint: 'Отпустите, чтобы загрузить фото и видео',
       dropTo: (folder) => `Они попадут в папку «${folder}»`,
       dropChoose: 'Папку выберете дальше',
@@ -266,6 +324,7 @@
     download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
     upload: '<path d="M12 16V5M7 10l5-5 5 5M5 20h14"/>',
     check: '<path d="m5 12 5 5 9-10"/>',
+    person: '<circle cx="12" cy="8" r="4"/><path d="M4 20c1.5-4 4.5-6 8-6s6.5 2 8 6"/>',
     selectAll: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="m8 12 3 3 5-6"/>',
     trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
     play: '<path d="M8 5v14l11-7z"/>',
@@ -443,6 +502,17 @@
   let uploadFolderId = null;
   let progress = {};
   let ffmpeg = true;
+  /** Faces: `{enabled, state}` from the plugin. */
+  let faces = { enabled: false };
+  /** People as the last grouping left them, by id; names are the user's. */
+  let people = new Map();
+  let names = { names: {}, hidden: [], merged: {} };
+  let peopleUrl = null;
+  /** Entries of the library by id. */
+  let byId = new Map();
+  /** The photos of each person filtered by, as people and names are now. */
+  let personFilesCache = new Map();
+  let showHiddenPeople = false;
   let loaded = false;
   let problem = '';
   /** Shards by link: the browser caches them, the page parses each once. */
@@ -523,6 +593,10 @@
     uploadFolderId = state.uploadFolder ?? null;
     progress = state.progress || {};
     ffmpeg = state.ffmpeg;
+    faces = state.faces ?? { enabled: false };
+    names = state.names ?? names;
+    await loadPeople(state.people);
+    personFilesCache = new Map();
     const next = new Map();
     await Promise.all(
       state.shards.map(async (url) => {
@@ -543,7 +617,52 @@
     const present = new Set(all.map((entry) => entry.id));
     for (const id of deletedIds) if (!present.has(id)) deletedIds.delete(id);
     library = all.filter((entry) => roots.has(entry.root) && !deletedIds.has(entry.id));
+    byId = new Map(library.map((entry) => [entry.id, entry]));
     loaded = true;
+  }
+
+  /** The people file changes after each grouping: a new link each time. */
+  async function loadPeople(url) {
+    if (!url) {
+      people = new Map();
+      peopleUrl = null;
+      return;
+    }
+    if (url === peopleUrl) return;
+    try {
+      const response = await fetch(url);
+      // Rewritten meanwhile: the next poll gets the new one.
+      if (!response.ok) return;
+      const data = await response.json();
+      people = new Map(data.people.map((person) => [person.id, { ...person, files: new Set(person.files) }]));
+      peopleUrl = url;
+    } catch {
+      // Kept as it was.
+    }
+  }
+
+  /** Where a merged person went (the grouping catches up later). */
+  function personOf(id) {
+    for (let i = 0; i < 16 && names.merged[id]; i++) id = names.merged[id];
+    return id;
+  }
+
+  const personName = (id) => names.names[personOf(id)] || t.unnamed;
+
+  /** People to show: merges applied, the most photos first. */
+  function peopleList() {
+    const merged = new Map();
+    for (const person of people.values()) {
+      const id = personOf(person.id);
+      const into = merged.get(id);
+      if (into) {
+        for (const file of person.files) into.files.add(file);
+        into.count += person.count;
+      } else {
+        merged.set(id, { ...person, id, files: new Set(person.files) });
+      }
+    }
+    return [...merged.values()].sort((a, b) => b.files.size - a.files.size || a.id.localeCompare(b.id));
   }
 
   const waiting = () => Object.values(progress).reduce((sum, kind) => sum + kind.waiting, 0);
@@ -581,6 +700,8 @@
     folders: new Set(),
     formats: new Set(),
     orientation: new Set(),
+    /** Person ids: photos with all of them. */
+    people: new Set(),
   };
   let sortNewest = true;
 
@@ -610,11 +731,25 @@
     if (filters.from && entry._day < filters.from) return false;
     if (filters.to && entry._day > filters.to) return false;
     if (filters.q && !filters.q.split(/\s+/).every((word) => entry._search.includes(word))) return false;
+    for (const id of filters.people) if (!personFiles(id).has(entry.id)) return false;
     if (skip !== 'folders' && filters.folders.size && !inFolders(entry, filters.folders)) return false;
     for (const [name, value] of Object.entries(FACETS)) {
       if (name !== skip && filters[name].size && !filters[name].has(value(entry))) return false;
     }
     return true;
+  }
+
+  /** The photos of a person, those of people merged into them too. */
+  function personFiles(id) {
+    let files = personFilesCache.get(id);
+    if (!files) {
+      files = new Set();
+      for (const person of people.values()) {
+        if (personOf(person.id) === id) for (const file of person.files) files.add(file);
+      }
+      personFilesCache.set(id, files);
+    }
+    return files;
   }
 
   function activeFilters() {
@@ -624,6 +759,7 @@
     if (filters.gps) active.push(['gps', t.withLocation]);
     if (filters.from) active.push(['from', `${t.from} ${filters.from}`]);
     if (filters.to) active.push(['to', `${t.to} ${filters.to}`]);
+    for (const id of filters.people) active.push(['people', personName(id), id]);
     for (const name of ['years', 'cameras', 'lenses', 'folders', 'formats', 'orientation']) {
       for (const value of filters[name]) active.push([name, name === 'orientation' ? t[value] : value, value]);
     }
@@ -931,6 +1067,7 @@
         h('div', { class: 'segmented' }, typeButton('all', t.all), typeButton('photo', t.photos), typeButton('video', t.videos)),
       ),
       h('section', {}, toggle('favorites', t.onlyFavorites), toggle('gps', t.withLocation)),
+      peopleSection(),
       h('section', {}, h('h3', {}, t.period), h('div', { class: 'dates' }, date('from', t.from), date('to', t.to))),
       years.length
         ? h(
@@ -977,6 +1114,188 @@
           )
         : null,
     );
+  }
+
+  /** People: a face per person to filter by, or how to turn faces on. */
+  function peopleSection() {
+    const title = h('h3', {}, t.people);
+    if (!faces.enabled) {
+      return h(
+        'section',
+        {},
+        title,
+        h('p', { class: 'hint', style: 'margin-top:0' }, t.facesOffText),
+        h('button', { class: 'btn', style: 'margin-top:10px', onclick: turnFacesOn }, icon('person'), t.facesOn),
+      );
+    }
+    const states = { downloading: t.facesDownloading, 'not-allowed': t.facesNotAllowed, 'no-engine': t.facesNoEngine };
+    const left = (progress.faces?.waiting ?? 0) + (progress.people?.waiting ?? 0);
+    const all = peopleList();
+    const hidden = new Set(names.hidden);
+    const list = all.filter((person) => showHiddenPeople || !hidden.has(person.id));
+    const hiddenCount = all.length - all.filter((person) => !hidden.has(person.id)).length;
+    const limit = 12;
+    const open = expanded.has('people');
+    return h(
+      'section',
+      {},
+      title,
+      faces.state !== 'ready' ? h('p', { class: 'hint', style: 'margin-top:0' }, states[faces.state] ?? t.facesFailed) : null,
+      left ? h('p', { class: 'hint faces-progress', style: 'margin-top:0' }, h('span', { class: 'spinner' }), t.facesLooking(left)) : null,
+      faces.state === 'ready' && !all.length && !left ? h('p', { class: 'hint', style: 'margin-top:0' }, t.facesNone) : null,
+      list.length
+        ? h(
+            'div',
+            { class: 'people' },
+            (open ? list : list.slice(0, limit)).map((person) =>
+              h(
+                'div',
+                { class: 'person' + (filters.people.has(person.id) ? ' on' : '') + (hidden.has(person.id) ? ' hidden' : '') },
+                h(
+                  'button',
+                  {
+                    class: 'face',
+                    title: `${personName(person.id)} · ${t.photosOf(person.files.size)}`,
+                    'aria-pressed': String(filters.people.has(person.id)),
+                    onclick: () => {
+                      if (filters.people.has(person.id)) filters.people.delete(person.id);
+                      else filters.people.add(person.id);
+                      refresh({ keepScroll: false });
+                    },
+                  },
+                  avatar(person),
+                ),
+                h('button', { class: 'name', onclick: () => editPerson(person) }, personName(person.id)),
+              ),
+            ),
+          )
+        : null,
+      list.length > limit
+        ? h(
+            'button',
+            {
+              class: 'more',
+              onclick: () => {
+                if (open) expanded.delete('people');
+                else expanded.add('people');
+                refresh();
+              },
+            },
+            open ? t.less : t.more(list.length - limit),
+          )
+        : null,
+      h(
+        'div',
+        { class: 'people-actions' },
+        hiddenCount
+          ? h(
+              'button',
+              { class: 'more', onclick: () => ((showHiddenPeople = !showHiddenPeople), refresh()) },
+              showHiddenPeople ? t.hideHidden : t.showHidden(hiddenCount),
+            )
+          : null,
+        h('button', { class: 'more', onclick: () => setFaces(false) }, t.facesOff),
+        h('button', { class: 'more danger', onclick: forgetFaces }, t.facesForget),
+      ),
+    );
+  }
+
+  /** A person's sharpest face, cut out of the photo's thumbnail. */
+  const AVATAR = 56;
+  function avatar(person, size = AVATAR) {
+    const el = h('span', { class: 'avatar', style: `width:${size}px;height:${size}px` }, icon('person'));
+    const entry = byId.get(person.cover.file);
+    if (!entry?.thumb) return el;
+    const [x, y, w, h_] = person.cover.b;
+    const width = entry.width || 1000;
+    const height = entry.height || 1000;
+    // A square around the face, a little larger than it.
+    const side = Math.max(w * width, h_ * height) * 1.5;
+    const cx = (x + w / 2) * width;
+    const cy = (y + h_ / 2) * height;
+    const k = size / side;
+    link('thumb', entry).then((url) => {
+      if (!url) return;
+      el.replaceChildren();
+      Object.assign(el.style, {
+        backgroundImage: `url("${url}")`,
+        backgroundSize: `${width * k}px ${height * k}px`,
+        backgroundPosition: `${-(cx - side / 2) * k}px ${-(cy - side / 2) * k}px`,
+      });
+    });
+    return el;
+  }
+
+  async function turnFacesOn() {
+    if (!(await ask({ title: t.facesAskTitle, text: t.facesAskText, action: t.facesOn }))) return;
+    await setFaces(true);
+  }
+
+  async function setFaces(on) {
+    try {
+      faces = await api('PUT', '/faces', { enabled: on });
+    } catch (e) {
+      problem = t.error(e.message);
+    }
+    await reload();
+  }
+
+  async function forgetFaces() {
+    if (!(await ask({ title: t.facesForgetTitle, text: t.facesForgetText, action: t.facesForget, danger: true }))) return;
+    try {
+      faces = await api('DELETE', '/faces');
+      filters.people.clear();
+    } catch (e) {
+      problem = t.error(e.message);
+    }
+    await reload();
+  }
+
+  /** Names or hides a person; a name another person has merges them. */
+  async function editPerson(person) {
+    const input = h('input', { type: 'text', value: names.names[person.id] ?? '', placeholder: t.personName, maxlength: 100 });
+    const hide = h('input', { type: 'checkbox', checked: names.hidden.includes(person.id) });
+    const answer = await new Promise((resolve) => {
+      let saved = false;
+      const form = h(
+        'form',
+        { method: 'dialog', onsubmit: () => (saved = true) },
+        h('div', { class: 'person-head' }, avatar(person, 72), h('h2', {}, t.personTitle)),
+        h('label', { class: 'field' }, h('span', {}, t.personName), input),
+        h('label', { class: 'toggle-row' }, h('span', {}, t.personHide), hide),
+        h(
+          'div',
+          { class: 'actions' },
+          h('button', { class: 'btn', type: 'button', onclick: () => dialog.close() }, t.cancel),
+          h('button', { class: 'btn primary', type: 'submit' }, t.save),
+        ),
+      );
+      hide.classList.add('switch');
+      const dialog = h('dialog', { class: 'person-dialog' }, form);
+      dialog.addEventListener('close', () => {
+        dialog.remove();
+        resolve(saved ? { name: input.value.trim(), hidden: hide.checked } : null);
+      });
+      document.body.append(dialog);
+      dialog.showModal();
+      input.focus();
+    });
+    if (!answer) return;
+    try {
+      const same = answer.name
+        ? peopleList().find((other) => other.id !== person.id && (names.names[other.id] ?? '').toLowerCase() === answer.name.toLowerCase())
+        : null;
+      if (same && (await ask({ title: t.mergeTitle(answer.name), text: t.mergeText, action: t.merge }))) {
+        ({ names } = await api('POST', '/people/merge', { from: [person.id], into: same.id }));
+        personFilesCache = new Map();
+        if (filters.people.delete(person.id)) filters.people.add(same.id);
+      } else {
+        ({ names } = await api('PUT', `/people/${person.id}`, answer));
+      }
+    } catch (e) {
+      problem = t.error(e.message);
+    }
+    refresh();
   }
 
   /** A list of checkboxes, the most common first; long lists fold. */
@@ -2795,6 +3114,48 @@
         row('alert', entry.error ? t.problem : null, entry.error, 'error'),
       ];
       this.info.replaceChildren(...rows.filter(Boolean));
+      if (faces.enabled && !entry.video) this.drawPeople(entry);
+    }
+
+    /** Who is in the photo: a chip per person shows all their photos. */
+    async drawPeople(entry) {
+      let found;
+      try {
+        ({ faces: found } = await api('GET', `/faces/${entry.id}`));
+      } catch {
+        return;
+      }
+      if (this.entry !== entry || !found.length) return;
+      const ids = [...new Set(found.filter((face) => face.p).map((face) => personOf(face.p)))];
+      const unknown = found.length - found.filter((face) => face.p).length;
+      const chips = ids.map((id) =>
+        h(
+          'button',
+          {
+            class: 'chip',
+            onclick: () => {
+              filters.people.clear();
+              filters.people.add(id);
+              this.close();
+              refresh({ keepScroll: false });
+            },
+          },
+          personName(id),
+        ),
+      );
+      const row = h(
+        'div',
+        { class: 'info-row' },
+        icon('person'),
+        h(
+          'div',
+          {},
+          h('div', { class: 'main people-chips' }, chips.length ? chips : t.facesFound(found.length)),
+          unknown && chips.length ? h('div', { class: 'sub' }, t.facesUnknown(unknown)) : null,
+        ),
+      );
+      // After the date and the file.
+      this.info.insertBefore(row, this.info.children[3] ?? null);
     }
 
     drawStrip() {

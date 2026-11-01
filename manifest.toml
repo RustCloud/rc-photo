@@ -1,7 +1,7 @@
 id = "rc-photo"
-version = "0.4.1"
-# The version of wit/app.wit: upload links need 0.2.12.
-api = "^0.2.12"
+version = "0.5.0"
+# The version of wit/app.wit: neural networks (use.onnx) need 0.2.13.
+api = "^0.2.13"
 
 [name]
 en = "Photos"
@@ -10,10 +10,28 @@ ru = "Фото"
 # Photos stay where they are: the user gives the app folders. Writing is
 # for deleting files from the gallery (since 0.2.0); it never changes them.
 # Thumbnails and the index are kept in the user's AppData of the app.
+# Faces (since 0.5.0, off until a user turns them on) run two neural
+# networks on the server; it downloads them from Hugging Face.
 [permissions]
 files = "folder"
 files_write = true
-use = ["ffmpeg"]
+use = ["ffmpeg", "onnx"]
+network = ["huggingface.co", "*.hf.co"]
+
+# Finds faces and their 5 points: YOLO11n trained for faces (MIT).
+[[downloads]]
+path = "models/face-yolo11n-5kp.onnx"
+url = "https://huggingface.co/huygiatrng/yolov11n-face-pose-5kp/resolve/main/face_5kp_yolo11n.onnx"
+sha256 = "27ef93e9ccc9e1f49ecdb29d443d1b986c31c8e69230e19584e888fcec86984f"
+size = 10982686
+
+# A vector per face: ArcFace w600k_r50 of insightface's buffalo_l (for
+# non-commercial use), as Immich publishes it.
+[[downloads]]
+path = "models/arcface-w600k-r50.onnx"
+url = "https://huggingface.co/immich-app/buffalo_l/resolve/main/recognition/model.onnx"
+sha256 = "4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43"
+size = 174383860
 
 # Batches of one user run one after another (workers = 1): the index is
 # rewritten by batches, never by two at once.
@@ -42,6 +60,21 @@ time = 2
 kind = "prune"
 batch = 1
 time = 4
+
+# One job per photo once faces are on: its faces and their vectors. The
+# picture of a photo comes as a tensor of up to 1600 px (about 20 MB).
+[[jobs]]
+kind = "faces"
+batch = 10
+time = 8
+memory = 4
+
+# Groups all the faces into people, after `faces` batches.
+[[jobs]]
+kind = "people"
+batch = 1
+time = 32
+memory = 4
 
 [ui]
 icon = "image"

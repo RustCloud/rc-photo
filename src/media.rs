@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use crate::exif;
+use crate::faces;
 use crate::index::{Entry, Shards, Store};
 use crate::rustcloud::app::jobs::{self as queue, Job, NewJob, Outcome};
 use crate::rustcloud::app::use_ffmpeg::{self, Fit, ImageFormat, Metadata, PictureOptions, Source};
@@ -52,7 +53,7 @@ pub enum Problem {
     Broken(String),
 }
 
-fn outcome(result: Result<(), Problem>) -> Outcome {
+pub fn outcome(result: Result<(), Problem>) -> Outcome {
     match result {
         Ok(()) => Outcome::Done,
         Err(Problem::Later(why)) => Outcome::Retry(why),
@@ -60,7 +61,7 @@ fn outcome(result: Result<(), Problem>) -> Outcome {
     }
 }
 
-fn later(err: impl std::fmt::Debug) -> Problem {
+pub fn later(err: impl std::fmt::Debug) -> Problem {
     Problem::Later(format!("{err:?}"))
 }
 
@@ -97,12 +98,14 @@ pub fn run_media(jobs: &[Job]) -> Vec<Outcome> {
         Err(err) => return jobs.iter().map(|_| Outcome::Retry(format!("{err:?}"))).collect(),
     };
     let mut places = Places::new(granted.iter().filter(|n| n.is_dir).map(|n| (n.id.clone(), n.name.clone())));
-    let mut shards = Shards::new(AppData);
+    let mut shards: Shards<AppData> = Shards::new(AppData);
     let results: Vec<_> = jobs.iter().map(|job| describe(&job.key, &mut shards, &mut places)).collect();
     // Nothing counts as done until the index is written.
     if let Err(err) = shards.save() {
         return jobs.iter().map(|_| Outcome::Retry(format!("index: {err:?}"))).collect();
     }
+    // Their faces follow: found, found again, or forgotten.
+    faces::index_changed(&jobs.iter().map(|job| job.key.clone()).collect::<Vec<_>>());
     results.into_iter().map(outcome).collect()
 }
 
@@ -235,9 +238,10 @@ pub fn run_prune(jobs: &[Job]) -> Vec<Outcome> {
 fn prune() -> Result<(), Problem> {
     let granted = files::granted().map_err(later)?;
     let roots: std::collections::HashSet<String> = granted.into_iter().filter(|n| n.is_dir).map(|n| n.id).collect();
-    let mut shards = Shards::new(AppData);
+    let mut shards: Shards<AppData> = Shards::new(AppData);
     let removed = shards.remove_where(|entry| !roots.contains(&entry.root)).map_err(later)?;
     shards.save().map_err(later)?;
+    faces::index_changed(&removed.iter().map(|entry| entry.id.clone()).collect::<Vec<_>>());
     for entry in removed {
         AppData.delete(&thumb_path(&entry.id)).map_err(later)?;
         AppData.delete(&preview_path(&entry.id)).map_err(later)?;

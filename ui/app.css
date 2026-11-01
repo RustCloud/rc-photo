@@ -764,6 +764,108 @@ svg.icon {
   color: var(--muted);
 }
 
+/* ── People ───────────────────────────────────────────── */
+.people {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  gap: 10px 6px;
+}
+.person {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.person.hidden {
+  opacity: 0.5;
+}
+.person .face {
+  padding: 2px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: none;
+  line-height: 0;
+}
+.person.on .face {
+  border-color: var(--accent);
+}
+.person .name {
+  max-width: 100%;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.person .name:hover {
+  color: var(--accent);
+}
+.avatar {
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background-color: var(--surface-2);
+  background-repeat: no-repeat;
+  color: var(--muted);
+  overflow: hidden;
+}
+.people-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 10px;
+}
+.more.danger {
+  color: var(--danger);
+}
+.faces-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.faces-progress .spinner {
+  width: 12px;
+  height: 12px;
+}
+.person-dialog .person-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.person-dialog .person-head h2 {
+  margin: 0;
+}
+.person-dialog .field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.person-dialog .field input {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+}
+.people-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.people-chips .chip {
+  height: 26px;
+  padding: 0 12px;
+}
+
 /* ── Empty states and notices ────────────────────────── */
 .empty {
   height: 100%;

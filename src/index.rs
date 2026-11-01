@@ -5,9 +5,11 @@
 //! few small files rather than one large one, and the page fetches the shards
 //! by links, past the plugin. Only batches write the index, one at a time
 //! (`workers = 1` in the manifest), so there are no concurrent rewrites.
+//! The faces of each photo ([`crate::faces`]) are kept the same way.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// How many shards the index is split into.
@@ -74,6 +76,21 @@ pub struct Entry {
     pub error: Option<String>,
 }
 
+/// What a shard holds: one item per file.
+pub trait Item: Serialize + DeserializeOwned + PartialEq {
+    /// The AppData folder of the shards.
+    const DIR: &'static str;
+    /// The file's id.
+    fn id(&self) -> &str;
+}
+
+impl Item for Entry {
+    const DIR: &'static str = DIR;
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
 /// Where the shards are read from and written to: AppData in the plugin,
 /// memory in tests.
 pub trait Store {
@@ -90,9 +107,9 @@ pub fn shard_of(id: &str) -> u32 {
     fnv1a(id.as_bytes()) % SHARDS
 }
 
-/// The AppData path of a shard.
-pub fn shard_path(shard: u32) -> String {
-    format!("{DIR}/{shard:02x}.json")
+/// The AppData path of a shard in `dir`.
+pub fn shard_path(dir: &str, shard: u32) -> String {
+    format!("{dir}/{shard:02x}.json")
 }
 
 /// FNV-1a, 32 bits: a small, stable hash.
@@ -102,27 +119,27 @@ fn fnv1a(bytes: &[u8]) -> u32 {
 
 /// The shards a batch reads and changes; [`Shards::save`] writes back the
 /// changed ones.
-pub struct Shards<S: Store> {
+pub struct Shards<S: Store, T: Item = Entry> {
     store: S,
-    loaded: BTreeMap<u32, Vec<Entry>>,
+    loaded: BTreeMap<u32, Vec<T>>,
     changed: BTreeSet<u32>,
 }
 
-impl<S: Store> Shards<S> {
+impl<S: Store, T: Item> Shards<S, T> {
     pub fn new(store: S) -> Self {
         Self { store, loaded: BTreeMap::new(), changed: BTreeSet::new() }
     }
 
     /// The entry of a file, if the index has one.
-    pub fn get(&mut self, id: &str) -> Result<Option<&Entry>, S::Error> {
-        Ok(self.shard(shard_of(id))?.iter().find(|entry| entry.id == id))
+    pub fn get(&mut self, id: &str) -> Result<Option<&T>, S::Error> {
+        Ok(self.shard(shard_of(id))?.iter().find(|entry| entry.id() == id))
     }
 
     /// Adds the entry, or replaces the one of the same file.
-    pub fn put(&mut self, entry: Entry) -> Result<(), S::Error> {
-        let shard = shard_of(&entry.id);
+    pub fn put(&mut self, entry: T) -> Result<(), S::Error> {
+        let shard = shard_of(entry.id());
         let entries = self.shard(shard)?;
-        match entries.iter_mut().find(|old| old.id == entry.id) {
+        match entries.iter_mut().find(|old| old.id() == entry.id()) {
             Some(old) if *old == entry => return Ok(()),
             Some(old) => *old = entry,
             None => entries.push(entry),
@@ -132,10 +149,10 @@ impl<S: Store> Shards<S> {
     }
 
     /// Removes a file's entry; returns it, if there was one.
-    pub fn remove(&mut self, id: &str) -> Result<Option<Entry>, S::Error> {
+    pub fn remove(&mut self, id: &str) -> Result<Option<T>, S::Error> {
         let shard = shard_of(id);
         let entries = self.shard(shard)?;
-        let Some(at) = entries.iter().position(|entry| entry.id == id) else {
+        let Some(at) = entries.iter().position(|entry| entry.id() == id) else {
             return Ok(None);
         };
         let entry = entries.remove(at);
@@ -144,12 +161,12 @@ impl<S: Store> Shards<S> {
     }
 
     /// Removes every entry `drop` picks, in all shards; returns them.
-    pub fn remove_where(&mut self, drop: impl Fn(&Entry) -> bool) -> Result<Vec<Entry>, S::Error> {
+    pub fn remove_where(&mut self, drop: impl Fn(&T) -> bool) -> Result<Vec<T>, S::Error> {
         let mut removed = Vec::new();
         for shard in 0..SHARDS {
             let entries = self.shard(shard)?;
             let before = entries.len();
-            let (gone, kept): (Vec<Entry>, Vec<Entry>) = std::mem::take(entries).into_iter().partition(&drop);
+            let (gone, kept): (Vec<T>, Vec<T>) = std::mem::take(entries).into_iter().partition(&drop);
             *entries = kept;
             if entries.len() != before {
                 self.changed.insert(shard);
@@ -159,11 +176,26 @@ impl<S: Store> Shards<S> {
         Ok(removed)
     }
 
+    /// Changes every entry with `change`, in all shards; it says whether it
+    /// changed one, so only those shards are written.
+    pub fn update_all(&mut self, mut change: impl FnMut(&mut T) -> bool) -> Result<(), S::Error> {
+        for shard in 0..SHARDS {
+            let mut changed = false;
+            for entry in self.shard(shard)? {
+                changed |= change(entry);
+            }
+            if changed {
+                self.changed.insert(shard);
+            }
+        }
+        Ok(())
+    }
+
     /// Writes the changed shards; an empty one is deleted.
     pub fn save(mut self) -> Result<(), S::Error> {
         for shard in std::mem::take(&mut self.changed) {
             let entries = &self.loaded[&shard];
-            let path = shard_path(shard);
+            let path = shard_path(T::DIR, shard);
             if entries.is_empty() {
                 self.store.delete(&path)?;
             } else {
@@ -174,9 +206,9 @@ impl<S: Store> Shards<S> {
         Ok(())
     }
 
-    fn shard(&mut self, shard: u32) -> Result<&mut Vec<Entry>, S::Error> {
+    fn shard(&mut self, shard: u32) -> Result<&mut Vec<T>, S::Error> {
         if !self.loaded.contains_key(&shard) {
-            let entries = match self.store.read(&shard_path(shard))? {
+            let entries = match self.store.read(&shard_path(T::DIR, shard))? {
                 // A shard that can't be read is rebuilt from scratch rather
                 // than stopping every batch that touches it.
                 Some(json) => serde_json::from_slice(&json).unwrap_or_default(),
@@ -226,18 +258,18 @@ pub mod tests {
         assert!(used.iter().all(|&s| s < SHARDS));
         // Ids spread over (nearly) all shards.
         assert!(used.len() > 60, "{} shards used", used.len());
-        assert_eq!(shard_path(10), "index/0a.json");
+        assert_eq!(shard_path(DIR, 10), "index/0a.json");
     }
 
     #[test]
     fn entries_survive_a_save() {
         let memory = Memory::default();
-        let mut shards = Shards::new(memory.clone());
+        let mut shards: Shards<_> = Shards::new(memory.clone());
         shards.put(entry("a", "r")).unwrap();
         shards.put(entry("b", "r")).unwrap();
         shards.save().unwrap();
 
-        let mut shards = Shards::new(memory.clone());
+        let mut shards: Shards<_> = Shards::new(memory.clone());
         assert_eq!(shards.get("a").unwrap().unwrap().name, "a.jpg");
         let mut changed = entry("a", "r");
         changed.name = "renamed.jpg".into();
@@ -249,13 +281,13 @@ pub mod tests {
     #[test]
     fn only_changed_shards_are_written() {
         let memory = Memory::default();
-        let mut shards = Shards::new(memory.clone());
+        let mut shards: Shards<_> = Shards::new(memory.clone());
         shards.put(entry("a", "r")).unwrap();
         shards.save().unwrap();
-        let path = shard_path(shard_of("a"));
+        let path = shard_path(DIR, shard_of("a"));
         memory.0.borrow_mut().insert(path.clone(), b"[]".to_vec()); // to see a rewrite
 
-        let mut shards = Shards::new(memory.clone());
+        let mut shards: Shards<_> = Shards::new(memory.clone());
         assert!(shards.get("a").unwrap().is_none());
         shards.put(entry("a", "r")).unwrap();
         shards.save().unwrap();
@@ -263,7 +295,7 @@ pub mod tests {
 
         // The same entry again changes nothing.
         memory.0.borrow_mut().insert(path.clone(), serde_json::to_vec(&[entry("a", "r")]).unwrap());
-        let mut shards = Shards::new(memory.clone());
+        let mut shards: Shards<_> = Shards::new(memory.clone());
         shards.put(entry("a", "r")).unwrap();
         assert!(shards.changed.is_empty());
     }
@@ -271,10 +303,10 @@ pub mod tests {
     #[test]
     fn empty_shards_are_deleted() {
         let memory = Memory::default();
-        let mut shards = Shards::new(memory.clone());
+        let mut shards: Shards<_> = Shards::new(memory.clone());
         shards.put(entry("a", "r")).unwrap();
         shards.save().unwrap();
-        let mut shards = Shards::new(memory.clone());
+        let mut shards: Shards<_> = Shards::new(memory.clone());
         assert_eq!(shards.remove("a").unwrap().unwrap().id, "a");
         assert!(shards.remove("a").unwrap().is_none());
         shards.save().unwrap();
@@ -284,16 +316,16 @@ pub mod tests {
     #[test]
     fn remove_where_goes_through_all_shards() {
         let memory = Memory::default();
-        let mut shards = Shards::new(memory.clone());
+        let mut shards: Shards<_> = Shards::new(memory.clone());
         for n in 0..200 {
             shards.put(entry(&format!("f{n}"), if n % 2 == 0 { "kept" } else { "gone" })).unwrap();
         }
         shards.save().unwrap();
-        let mut shards = Shards::new(memory.clone());
+        let mut shards: Shards<_> = Shards::new(memory.clone());
         let removed = shards.remove_where(|e| e.root == "gone").unwrap();
         assert_eq!(removed.len(), 100);
         shards.save().unwrap();
-        let mut shards = Shards::new(memory);
+        let mut shards: Shards<_> = Shards::new(memory);
         assert!(shards.get("f0").unwrap().is_some());
         assert!(shards.get("f1").unwrap().is_none());
     }
@@ -301,8 +333,8 @@ pub mod tests {
     #[test]
     fn a_broken_shard_starts_empty() {
         let memory = Memory::default();
-        memory.0.borrow_mut().insert(shard_path(shard_of("a")), b"not json".to_vec());
-        let mut shards = Shards::new(memory);
+        memory.0.borrow_mut().insert(shard_path(DIR, shard_of("a")), b"not json".to_vec());
+        let mut shards: Shards<_> = Shards::new(memory);
         assert!(shards.get("a").unwrap().is_none());
     }
 }

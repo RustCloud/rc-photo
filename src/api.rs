@@ -12,6 +12,11 @@
 //! | `POST /api/uploads`          | links to upload files to, past the plugin ([`upload`]) |
 //! | `PUT /api/upload-folder/<id>`| remembers the folder uploads went to last            |
 //! | `POST /api/rebuild`          | walks the folders again, drops what is no longer given |
+//! | `PUT /api/faces`             | turns faces on or off: `{enabled}`                   |
+//! | `DELETE /api/faces`          | turns faces off and deletes faces, people and names  |
+//! | `GET /api/faces/<id>`        | a photo's faces: boxes and people                    |
+//! | `PUT /api/people/<id>`       | names, hides or shows a person: `{name?, hidden?}`   |
+//! | `POST /api/people/merge`     | merges people: `{from, into}`                        |
 //!
 //! The index itself never passes through the plugin: the page fetches its
 //! shards by links, and the browser keeps them while they don't change.
@@ -29,6 +34,7 @@ use crate::rustcloud::app::{appdata, files, use_ffmpeg};
 use crate::upload::{self, UploadRequest};
 use crate::web::{error, json, ok, query_param, valid_id};
 use crate::Response;
+use crate::{faces, people};
 
 /// Most links one request asks for (the server's limit for `links.create`).
 const MAX_LINKS: usize = 1000;
@@ -57,6 +63,15 @@ pub fn handle(method: &str, path: &str, query: &str, body: &[u8]) -> Response {
             Err(err) => error(400, &err.to_string()),
         },
         ("POST", "/rebuild") => rebuild(),
+        ("PUT", "/faces") => match serde_json::from_slice::<FacesRequest>(body) {
+            Ok(request) => faces::set_enabled(request.enabled),
+            Err(err) => error(400, &err.to_string()),
+        },
+        ("DELETE", "/faces") => faces::forget_all(),
+        ("POST", "/people/merge") => match serde_json::from_slice::<MergeRequest>(body) {
+            Ok(request) => people::merge(&request.from, &request.into),
+            Err(err) => error(400, &err.to_string()),
+        },
         _ => {
             if let Some(id) = path.strip_prefix("/stream/") {
                 return match method {
@@ -73,6 +88,19 @@ pub fn handle(method: &str, path: &str, query: &str, body: &[u8]) -> Response {
             if let Some(id) = path.strip_prefix("/upload-folder/") {
                 return match method {
                     "PUT" => remember_upload_folder(id),
+                    _ => error(405, "method not allowed"),
+                };
+            }
+            if let Some(id) = path.strip_prefix("/faces/") {
+                return match method {
+                    "GET" => faces::of_file(id),
+                    _ => error(405, "method not allowed"),
+                };
+            }
+            if let Some(id) = path.strip_prefix("/people/") {
+                return match (method, serde_json::from_slice::<PersonRequest>(body)) {
+                    ("PUT", Ok(request)) => people::change(id, request.name.as_deref(), request.hidden),
+                    ("PUT", Err(err)) => error(400, &err.to_string()),
                     _ => error(405, "method not allowed"),
                 };
             }
@@ -115,7 +143,15 @@ fn state() -> Response {
         .map(|kind| (kind.kind, json!({ "waiting": kind.waiting, "failed": kind.failed })))
         .collect();
     let folders: Vec<_> = folders.iter().map(|f| json!({ "id": f.id, "name": f.name })).collect();
+    // People by link (with every photo of each, it can be large); names here.
+    let people = match links::create(&[Target::Appdata(people::PEOPLE.into())]).pop() {
+        Some(Ok(url)) => Some(url),
+        _ => None,
+    };
     ok(json!({
+        "faces": faces::status(),
+        "people": people,
+        "names": people::Names::read(),
         "folders": folders,
         "shards": shard_links,
         "progress": progress,
@@ -123,6 +159,23 @@ fn state() -> Response {
         "uploadFolder": appdata::read(UPLOAD_FOLDER).ok().and_then(|id| String::from_utf8(id).ok()),
         "ffmpeg": use_ffmpeg::get_capabilities().available,
     }))
+}
+
+#[derive(Deserialize)]
+struct FacesRequest {
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct PersonRequest {
+    name: Option<String>,
+    hidden: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct MergeRequest {
+    from: Vec<String>,
+    into: String,
 }
 
 #[derive(Deserialize)]
