@@ -81,7 +81,14 @@
       facesFailed: 'The neural networks could not be started.',
       facesLooking: (n) => `Looking for faces: ${n} left`,
       facesNone: 'No people yet: a person appears once their face is in a few photos.',
-      unnamed: 'No name',
+      nameN: (n) => `Name ${n}`,
+      attach: 'Attach',
+      attachTitle: 'Attach to',
+      attachWhole: (n) => `All faces of this person (${plural(n, `${n} photo`, `${n} photos`, `${n} photos`)})`,
+      notThem: 'Not this person',
+      avatarTitle: 'Face to show',
+      newPersonHint: 'A name makes a new person of this face; or attach it to someone.',
+      showFaces: 'Faces',
       showHidden: (n) => `Hidden: ${n}`,
       hideHidden: 'Hide them again',
       facesOff: 'Turn off',
@@ -230,7 +237,14 @@
       facesFailed: 'Не удалось запустить нейросети.',
       facesLooking: (n) => `Ищу лица: осталось ${n}`,
       facesNone: 'Людей пока нет: человек появится, когда его лицо найдётся на нескольких фото.',
-      unnamed: 'Без имени',
+      nameN: (n) => `Name ${n}`,
+      attach: 'Присоединить',
+      attachTitle: 'Присоединить к',
+      attachWhole: (n) => `Все лица этого человека (${n} фото)`,
+      notThem: 'Это не он',
+      avatarTitle: 'Лицо для аватара',
+      newPersonHint: 'Имя сделает из этого лица нового человека; или присоедините его к кому-то.',
+      showFaces: 'Лица',
       showHidden: (n) => `Скрытые: ${n}`,
       hideHidden: 'Снова скрыть',
       facesOff: 'Выключить',
@@ -510,6 +524,23 @@
   let peopleUrl = null;
   /** Entries of the library by id. */
   let byId = new Map();
+  /** The faces of photos, by id and etag, as the viewer asked for them. */
+  const facesCache = new Map();
+  function facesOf(entry) {
+    const key = `${entry.id}:${entry.etag}`;
+    if (!facesCache.has(key)) {
+      facesCache.set(
+        key,
+        api('GET', `/faces/${entry.id}`).then(
+          (answer) => answer.faces,
+          () => (facesCache.delete(key), []),
+        ),
+      );
+    }
+    return facesCache.get(key);
+  }
+  /** Whether the viewer draws circles on faces. */
+  let facesShown = true;
   /** The photos of each person filtered by, as people and names are now. */
   let personFilesCache = new Map();
   let showHiddenPeople = false;
@@ -647,7 +678,13 @@
     return id;
   }
 
-  const personName = (id) => names.names[personOf(id)] || t.unnamed;
+  /** The user's name for a person, or `Name <n>` by their number. */
+  function personName(id) {
+    id = personOf(id);
+    if (names.names[id]) return names.names[id];
+    const n = Number(id.slice(1));
+    return id.startsWith('m') ? t.nameN(`M${n + 1}`) : t.nameN(n + 1);
+  }
 
   /** People to show: merges applied, the most photos first. */
   function peopleList() {
@@ -661,6 +698,10 @@
       } else {
         merged.set(id, { ...person, id, files: new Set(person.files) });
       }
+    }
+    // People made by hand show at once, before the grouping catches up.
+    for (const id of Object.keys(names.names)) {
+      if (id.startsWith('m') && !merged.has(id) && !names.merged[id]) merged.set(id, { id, count: 0, files: new Set(), cover: null });
     }
     return [...merged.values()].sort((a, b) => b.files.size - a.files.size || a.id.localeCompare(b.id));
   }
@@ -1165,7 +1206,7 @@
                   },
                   avatar(person),
                 ),
-                h('button', { class: 'name', onclick: () => editPerson(person) }, personName(person.id)),
+                h('button', { class: 'name', onclick: () => editPerson({ person }) }, personName(person.id)),
               ),
             ),
           )
@@ -1200,13 +1241,21 @@
     );
   }
 
-  /** A person's sharpest face, cut out of the photo's thumbnail. */
+  /** A person's face: the one the user chose, or the sharpest. */
   const AVATAR = 56;
   function avatar(person, size = AVATAR) {
+    const chosen = names.covers?.[person.id];
+    const face = chosen && byId.has(chosen.file) ? chosen : person.cover;
+    if (!face) return h('span', { class: 'avatar', style: `width:${size}px;height:${size}px` }, icon('person'));
+    return faceImage(face, size);
+  }
+
+  /** A face (`{file, b}`) cut out of the photo's thumbnail. */
+  function faceImage(face, size = AVATAR) {
     const el = h('span', { class: 'avatar', style: `width:${size}px;height:${size}px` }, icon('person'));
-    const entry = byId.get(person.cover.file);
+    const entry = byId.get(face.file);
     if (!entry?.thumb) return el;
-    const [x, y, w, h_] = person.cover.b;
+    const [x, y, w, h_] = face.b;
     const width = entry.width || 1000;
     const height = entry.height || 1000;
     // A square around the face, a little larger than it.
@@ -1251,18 +1300,128 @@
     await reload();
   }
 
-  /** Names or hides a person; a name another person has merges them. */
-  async function editPerson(person) {
-    const input = h('input', { type: 'text', value: names.names[person.id] ?? '', placeholder: t.personName, maxlength: 100 });
-    const hide = h('input', { type: 'checkbox', checked: names.hidden.includes(person.id) });
+  /**
+   * The editor of a person, or of one face (`face`: `{file, i, b, p}`, from
+   * the viewer): name, hide, the face to show; attach the face or the whole
+   * person to someone else; "not this person". A face nobody has gets a
+   * name (a new person) or is attached.
+   */
+  async function editPerson({ person = null, face = null } = {}) {
+    const others = peopleList().filter((other) => other.id !== person?.id);
+    const input = h('input', {
+      type: 'text',
+      value: person ? names.names[person.id] ?? '' : '',
+      placeholder: person ? personName(person.id) : t.personName,
+      maxlength: 100,
+    });
+    const hide = h('input', { type: 'checkbox', class: 'switch', checked: person ? names.hidden.includes(person.id) : false });
+    let cover = null;
+    let attachTo = null;
+    let detach = false;
+    const whole = h('input', { type: 'checkbox', checked: !face });
+
+    // The faces to choose the one shown from, loaded when asked.
+    const covers = h('div', { class: 'cover-picks' });
+    const loadCovers = async () => {
+      covers.replaceChildren(h('span', { class: 'spinner' }));
+      try {
+        const { faces: found } = await api('GET', `/people/${person.id}/faces`);
+        const current = names.covers?.[person.id] ?? person.cover;
+        covers.replaceChildren(
+          ...found
+            .filter((f) => byId.has(f.file))
+            .map((f) => {
+              const pick = h(
+                'button',
+                {
+                  type: 'button',
+                  class: 'cover-pick' + (f.file === current.file && String(f.b) === String(current.b) ? ' on' : ''),
+                  onclick: () => {
+                    cover = { file: f.file, b: f.b };
+                    covers.querySelectorAll('.cover-pick').forEach((el) => el.classList.toggle('on', el === pick));
+                  },
+                },
+                faceImage(f, 44),
+              );
+              return pick;
+            }),
+        );
+      } catch (e) {
+        covers.replaceChildren(t.error(e.message));
+      }
+    };
+
+    // Whom to attach to: a face per person.
+    const targets = h(
+      'div',
+      { class: 'attach-picks', hidden: true },
+      others.map((other) =>
+        h(
+          'button',
+          {
+            type: 'button',
+            class: 'attach-pick',
+            onclick: (event) => {
+              attachTo = attachTo === other.id ? null : other.id;
+              targets.querySelectorAll('.attach-pick').forEach((el) => el.classList.toggle('on', el === event.currentTarget && attachTo));
+            },
+          },
+          avatar(other, 36),
+          h('span', {}, personName(other.id)),
+        ),
+      ),
+    );
+    const attachButton = others.length
+      ? h('button', { type: 'button', class: 'btn', onclick: () => (targets.hidden = !targets.hidden) }, t.attach)
+      : null;
+
     const answer = await new Promise((resolve) => {
       let saved = false;
       const form = h(
         'form',
         { method: 'dialog', onsubmit: () => (saved = true) },
-        h('div', { class: 'person-head' }, avatar(person, 72), h('h2', {}, t.personTitle)),
+        h('div', { class: 'person-head' }, face ? faceImage(face, 72) : avatar(person, 72), h('h2', {}, t.personTitle)),
         h('label', { class: 'field' }, h('span', {}, t.personName), input),
-        h('label', { class: 'toggle-row' }, h('span', {}, t.personHide), hide),
+        person ? null : h('p', { class: 'hint', style: 'margin:-4px 0 12px' }, t.newPersonHint),
+        person ? h('label', { class: 'toggle-row' }, h('span', {}, t.personHide), hide) : null,
+        person
+          ? h(
+              'details',
+              { class: 'cover-section', ontoggle: (event) => event.target.open && !covers.childElementCount && loadCovers() },
+              h('summary', {}, t.avatarTitle),
+              covers,
+            )
+          : null,
+        attachButton || (face && person)
+          ? h(
+              'div',
+              { class: 'person-tools' },
+              attachButton,
+              face && person
+                ? h(
+                    'button',
+                    {
+                      type: 'button',
+                      class: 'btn',
+                      onclick: () => {
+                        detach = true;
+                        saved = true;
+                        dialog.close();
+                      },
+                    },
+                    t.notThem,
+                  )
+                : null,
+            )
+          : null,
+        others.length
+          ? h(
+              'div',
+              { class: 'attach' },
+              targets,
+              face && person ? h('label', { class: 'check attach-whole' }, whole, h('span', {}, t.attachWhole(person.files.size))) : null,
+            )
+          : null,
         h(
           'div',
           { class: 'actions' },
@@ -1270,8 +1429,10 @@
           h('button', { class: 'btn primary', type: 'submit' }, t.save),
         ),
       );
-      hide.classList.add('switch');
       const dialog = h('dialog', { class: 'person-dialog' }, form);
+      // The whole-person box only matters once there is someone to attach to.
+      targets.addEventListener('click', () => whole.closest('.attach-whole')?.toggleAttribute('hidden', !attachTo));
+      whole.closest('.attach-whole')?.setAttribute('hidden', '');
       dialog.addEventListener('close', () => {
         dialog.remove();
         resolve(saved ? { name: input.value.trim(), hidden: hide.checked } : null);
@@ -1282,20 +1443,36 @@
     });
     if (!answer) return;
     try {
-      const same = answer.name
-        ? peopleList().find((other) => other.id !== person.id && (names.names[other.id] ?? '').toLowerCase() === answer.name.toLowerCase())
-        : null;
-      if (same && (await ask({ title: t.mergeTitle(answer.name), text: t.mergeText, action: t.merge }))) {
-        ({ names } = await api('POST', '/people/merge', { from: [person.id], into: same.id }));
-        personFilesCache = new Map();
-        if (filters.people.delete(person.id)) filters.people.add(same.id);
+      if (detach) {
+        ({ names } = await api('PUT', `/faces/${face.file}/${face.i}`, { person: null }));
+      } else if (attachTo && face && !(person && whole.checked)) {
+        ({ names } = await api('PUT', `/faces/${face.file}/${face.i}`, { person: attachTo }));
+      } else if (attachTo) {
+        ({ names } = await api('POST', '/people/merge', { from: [person.id], into: attachTo }));
+        if (filters.people.delete(person.id)) filters.people.add(attachTo);
+      } else if (!person) {
+        if (!answer.name) return;
+        ({ names } = await api('PUT', `/faces/${face.file}/${face.i}`, { name: answer.name }));
       } else {
-        ({ names } = await api('PUT', `/people/${person.id}`, answer));
+        const same = answer.name
+          ? others.find((other) => (names.names[other.id] ?? '').toLowerCase() === answer.name.toLowerCase())
+          : null;
+        if (same && (await ask({ title: t.mergeTitle(answer.name), text: t.mergeText, action: t.merge }))) {
+          ({ names } = await api('POST', '/people/merge', { from: [person.id], into: same.id }));
+          if (filters.people.delete(person.id)) filters.people.add(same.id);
+        } else {
+          const change = { name: answer.name, hidden: answer.hidden };
+          if (cover) change.cover = cover;
+          ({ names } = await api('PUT', `/people/${person.id}`, change));
+        }
       }
     } catch (e) {
       problem = t.error(e.message);
     }
-    refresh();
+    personFilesCache = new Map();
+    facesCache.clear();
+    viewer?.redrawFaces();
+    await reload();
   }
 
   /** A list of checkboxes, the most common first; long lists fold. */
@@ -2756,6 +2933,7 @@
       if (entry.video) this.showVideo(entry);
       else this.showPhoto(entry);
       this.fit(false);
+      if (!entry.video && faces.enabled) this.drawFaces(entry);
       if (from) this.flyFrom(from);
       this.drawBar();
       this.drawInfo();
@@ -2879,6 +3057,59 @@
     apply(animate) {
       this.media.classList.toggle('animate', Boolean(animate));
       this.media.style.transform = `translate(${this.view.x}px, ${this.view.y}px) scale(${this.view.z})`;
+      // Circles on faces keep their lines thin when zoomed in.
+      this.media.style.setProperty('--z', this.view.z);
+    }
+
+    /** Circles on the photo's faces: a click opens the face's editor. */
+    async drawFaces(entry) {
+      const found = await facesOf(entry);
+      if (this.entry !== entry) return;
+      this.media.querySelector('.faces')?.remove();
+      if (!found.length) return;
+      const { width, height } = this.natural;
+      const layer = h(
+        'div',
+        { class: 'faces', hidden: !facesShown },
+        found.map((face) => {
+          const [x, y, w, h_] = face.b;
+          // A circle around the box, in parts of the picture.
+          const side = Math.max(w * width, h_ * height) * 1.15;
+          const left = (x + w / 2) * width - side / 2;
+          const top = (y + h_ / 2) * height - side / 2;
+          const person = face.p ? people.get(face.p) ?? { id: personOf(face.p), files: new Set(), cover: { file: entry.id, b: face.b } } : null;
+          return h(
+            'button',
+            {
+              class: 'face-ring' + (face.p ? '' : ' unknown'),
+              style: `left:${(left / width) * 100}%;top:${(top / height) * 100}%;width:${(side / width) * 100}%;height:${(side / height) * 100}%`,
+              title: face.p ? personName(face.p) : t.personTitle,
+              onclick: () => {
+                const shown = person && { ...person, id: personOf(person.id), files: personFiles(personOf(person.id)) };
+                editPerson({ person: shown, face: { file: entry.id, i: face.i, b: face.b, p: face.p } });
+              },
+            },
+            h('span', { class: 'face-label' }, face.p ? personName(face.p) : '?'),
+          );
+        }),
+      );
+      this.media.append(layer);
+      this.drawBar();
+    }
+
+    redrawFaces() {
+      const entry = this.entry;
+      if (entry && !entry.video && faces.enabled) {
+        this.drawFaces(entry);
+        if (this.infoOpen) this.drawInfo();
+      }
+    }
+
+    toggleFaces() {
+      facesShown = !facesShown;
+      const layer = this.media.querySelector('.faces');
+      if (layer) layer.hidden = !facesShown;
+      this.drawBar();
     }
 
     /** Opens from the tile: the picture grows out of it. */
@@ -3067,6 +3298,9 @@
         iconButton('heart', favorite ? t.unfavorite : t.favorite, () => toggleFavorite(entry), {
           class: 'icon-btn' + (favorite ? ' on' : ''),
         }),
+        this.media?.querySelector('.faces')
+          ? iconButton('person', t.showFaces, () => this.toggleFaces(), { class: 'icon-btn' + (facesShown ? ' on' : '') })
+          : null,
         iconButton('download', t.download, () => this.download()),
         iconButton('trash', t.delete, () => this.deleteCurrent()),
         iconButton('info', t.info, () => this.toggleInfo()),
@@ -3119,12 +3353,7 @@
 
     /** Who is in the photo: a chip per person shows all their photos. */
     async drawPeople(entry) {
-      let found;
-      try {
-        ({ faces: found } = await api('GET', `/faces/${entry.id}`));
-      } catch {
-        return;
-      }
+      const found = await facesOf(entry);
       if (this.entry !== entry || !found.length) return;
       const ids = [...new Set(found.filter((face) => face.p).map((face) => personOf(face.p)))];
       const unknown = found.length - found.filter((face) => face.p).length;

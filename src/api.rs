@@ -15,7 +15,9 @@
 //! | `PUT /api/faces`             | turns faces on or off: `{enabled}`                   |
 //! | `DELETE /api/faces`          | turns faces off and deletes faces, people and names  |
 //! | `GET /api/faces/<id>`        | a photo's faces: boxes and people                    |
-//! | `PUT /api/people/<id>`       | names, hides or shows a person: `{name?, hidden?}`   |
+//! | `PUT /api/faces/<id>/<n>`    | puts a face with a person: `{person}`, nobody: `{person: null}`, a new one: `{name}` |
+//! | `PUT /api/people/<id>`       | names, hides, shows a person, its face: `{name?, hidden?, cover?}` |
+//! | `GET /api/people/<id>/faces` | a person's faces, the sharpest first                 |
 //! | `POST /api/people/merge`     | merges people: `{from, into}`                        |
 //!
 //! The index itself never passes through the plugin: the page fetches its
@@ -91,15 +93,32 @@ pub fn handle(method: &str, path: &str, query: &str, body: &[u8]) -> Response {
                     _ => error(405, "method not allowed"),
                 };
             }
-            if let Some(id) = path.strip_prefix("/faces/") {
-                return match method {
-                    "GET" => faces::of_file(id),
+            if let Some(rest) = path.strip_prefix("/faces/") {
+                return match (method, rest.split_once('/')) {
+                    ("GET", None) => faces::of_file(rest),
+                    ("PUT", Some((id, index))) => {
+                        match (index.parse(), serde_json::from_slice::<AssignRequest>(body)) {
+                            (Ok(index), Ok(request)) => {
+                                people::assign(id, index, request.person.as_deref(), request.name.as_deref())
+                            }
+                            (Err(_), _) => error(400, "not a face number"),
+                            (_, Err(err)) => error(400, &err.to_string()),
+                        }
+                    }
                     _ => error(405, "method not allowed"),
                 };
             }
-            if let Some(id) = path.strip_prefix("/people/") {
+            if let Some(rest) = path.strip_prefix("/people/") {
+                if let Some(id) = rest.strip_suffix("/faces") {
+                    return match method {
+                        "GET" => people::faces_of(id),
+                        _ => error(405, "method not allowed"),
+                    };
+                }
                 return match (method, serde_json::from_slice::<PersonRequest>(body)) {
-                    ("PUT", Ok(request)) => people::change(id, request.name.as_deref(), request.hidden),
+                    ("PUT", Ok(request)) => {
+                        people::change(rest, request.name.as_deref(), request.hidden, request.cover)
+                    }
                     ("PUT", Err(err)) => error(400, &err.to_string()),
                     _ => error(405, "method not allowed"),
                 };
@@ -170,6 +189,17 @@ struct FacesRequest {
 struct PersonRequest {
     name: Option<String>,
     hidden: Option<bool>,
+    cover: Option<people::Cover>,
+}
+
+#[derive(Deserialize)]
+struct AssignRequest {
+    /// A person's id, or null for nobody.
+    #[serde(default)]
+    person: Option<String>,
+    /// A new person of this name.
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Deserialize)]

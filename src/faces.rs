@@ -400,9 +400,23 @@ pub fn of_file(id: &str) -> Response {
         return error(400, "not a file id");
     }
     let mut faces: Shards<AppData, FaceFile> = Shards::new(AppData);
+    // What the user set shows at once, before the job catches up.
+    let names = crate::people::Names::read();
     match faces.get(id) {
         Ok(Some(file)) => ok(json!({
-            "faces": file.faces.iter().map(|face| json!({ "b": face.b, "w": face.w, "p": face.p })).collect::<Vec<_>>(),
+            "faces": file
+                .faces
+                .iter()
+                .enumerate()
+                .map(|(index, face)| {
+                    let by_hand = names
+                        .faces
+                        .get(&crate::people::face_key(&file.id, index))
+                        .filter(|set| set.etag == file.etag);
+                    let person = by_hand.map_or(face.p.as_ref(), |set| set.p.as_ref());
+                    json!({ "i": index, "b": face.b, "w": face.w, "p": person })
+                })
+                .collect::<Vec<_>>(),
         })),
         Ok(None) => ok(json!({ "faces": [] })),
         Err(err) => error(500, &format!("{err:?}")),

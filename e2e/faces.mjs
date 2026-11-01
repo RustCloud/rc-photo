@@ -130,13 +130,15 @@ for (const person of people) {
 await page.reload();
 await frame.locator('.tile img.loaded').first().waitFor({ timeout: 30_000 });
 await section.locator('.person').first().waitFor({ timeout: 20_000 });
-console.log(`people in the page: ${await section.locator('.person').count()}, faces drawn ${await section.locator('.avatar[style*="background-image"]').count()}`);
+console.log(`people in the page: ${await section.locator('.person').count()}, faces drawn ${await section.locator('.avatar[style*="background-image"]').count()}, names "${(await section.locator('.person .name').allInnerTexts()).join(', ')}"`);
 await page.waitForTimeout(500);
 await page.screenshot({ path: '/out/faces-people.png' });
 
 // Name the one with the most photos.
 const first = people[0];
-const firstName = ids[first.files[0]].split('_')[0];
+// Named after whom most of their photos are of.
+const prefixes = first.files.map((id) => ids[id].split('_')[0]);
+const firstName = prefixes.sort((a, b) => prefixes.filter((x) => x === b).length - prefixes.filter((x) => x === a).length)[0];
 await section.locator('.person .name').first().click();
 await frame.locator('dialog[open] h2', { hasText: 'Кто это' }).waitFor();
 await frame.locator('dialog[open] input[type=text]').fill(firstName);
@@ -151,16 +153,81 @@ await page.waitForTimeout(300);
 console.log(`filter by ${firstName}: "${await frame.locator('.topbar .count').innerText()}", chip "${await frame.locator('.chips .chip').first().innerText()}"`);
 await page.screenshot({ path: '/out/faces-filtered.png' });
 
-// The viewer says who is in the photo.
+// The viewer says who is in the photo, and draws circles on the faces.
 await frame.locator('.tile').first().click();
 await frame.locator('.viewer .info .people-chips').waitFor({ timeout: 10_000 });
-console.log(`viewer: people "${await frame.locator('.viewer .info .people-chips').innerText()}"`);
+const rings = frame.locator('.viewer .faces .face-ring');
+await rings.first().waitFor({ timeout: 10_000 });
+await page.waitForTimeout(500);
+console.log(`viewer: people "${await frame.locator('.viewer .info .people-chips').innerText()}", circles ${await rings.count()}: ${(await frame.locator('.viewer .face-label').allInnerTexts()).join(', ')}`);
 await page.screenshot({ path: '/out/faces-viewer.png' });
 await page.keyboard.press('Escape');
+await frame.locator('.viewer').waitFor({ state: 'detached', timeout: 10_000 });
+await section.locator('.person.on .face').click();
+
+const regrouped = async () => {
+  ({ s } = await until('regrouping', (s) => !left(s, ['people']), 120_000));
+  return (await json(await api.get(s.people), 'people')).people;
+};
+const openPhoto = async (name) => {
+  await frame.locator(`.tile[aria-label="${name}"]`).click();
+  await frame.locator('.viewer .faces .face-ring').first().waitFor({ timeout: 10_000 });
+};
+const editor = frame.locator('dialog[open]');
+const closeViewer = async () => {
+  await page.keyboard.press('Escape');
+  await frame.locator('.viewer').waitFor({ state: 'detached', timeout: 10_000 });
+};
+process.on('uncaughtException', async (e) => {
+  console.log(`failed: ${e.message.split('\n')[0]}`);
+  await page.screenshot({ path: '/out/faces-fail.png' }).catch(() => {});
+  process.exit(1);
+});
+
+// A face nobody has becomes a new person by its name; another face is attached to them.
+await openPhoto('biden_1.jpg');
+await frame.locator('.viewer .face-ring.unknown').first().click();
+await editor.locator('h2', { hasText: 'Кто это' }).waitFor();
+await editor.locator('input[type=text]').fill('biden');
+await page.screenshot({ path: '/out/faces-new-person.png' });
+await editor.getByRole('button', { name: 'Сохранить' }).click();
+await frame.locator('.viewer .face-label', { hasText: 'biden' }).waitFor({ timeout: 10_000 });
+await closeViewer();
+let now = await regrouped();
+const biden = now.find((p) => p.files.some((id) => ids[id] === 'biden_1.jpg'));
+console.log(`biden by hand: ${biden?.id} in ${biden?.files.map((id) => ids[id]).join(', ')} (the other photo joined by itself)`);
+
+await section.locator('.person .name', { hasText: 'biden' }).waitFor({ timeout: 10_000 });
+// A face nobody has, attached to a person; then "not this person" takes it off again.
+await openPhoto('obama_family.jpg');
+await frame.locator('.viewer .face-ring.unknown').first().click();
+await editor.getByRole('button', { name: 'Присоединить' }).click();
+await editor.locator('.attach-pick', { hasText: 'biden' }).click();
+await page.screenshot({ path: '/out/faces-attach.png' });
+await editor.getByRole('button', { name: 'Сохранить' }).click();
+await frame.locator('.viewer .face-label', { hasText: 'biden' }).waitFor({ timeout: 10_000 });
+console.log(`attached: labels ${(await frame.locator('.viewer .face-label').allInnerTexts()).join(', ')}`);
+now = await regrouped();
+console.log(`biden after attaching: ${now.find((p) => p.id === biden.id)?.files.map((id) => ids[id]).join(', ')}`);
+await frame.locator('.viewer .face-ring', { hasText: 'biden' }).click();
+await editor.getByRole('button', { name: 'Это не он' }).click();
+await frame.locator('.viewer .face-label', { hasText: 'biden' }).waitFor({ state: 'detached', timeout: 10_000 });
+console.log(`not this person: labels ${(await frame.locator('.viewer .face-label').allInnerTexts()).join(', ')}`);
+await closeViewer();
+now = await regrouped();
+console.log(`people now: ${now.map((p) => `${p.id}:${p.files.map((id) => ids[id]).join('+')}`).join(' ')}`);
+
+// The face a person is shown by: chosen among their faces.
+await section.locator('.person .name', { hasText: firstName }).click();
+await editor.locator('summary', { hasText: 'Лицо для аватара' }).click();
+await editor.locator('.cover-pick').nth(1).click();
+await page.screenshot({ path: '/out/faces-avatar.png' });
+await editor.getByRole('button', { name: 'Сохранить' }).click();
+await page.waitForTimeout(300);
+console.log(`avatar chosen: ${JSON.stringify((await state()).names.covers)}`);
 
 // Naming a second person with the same name merges them.
 if (people.length > 1) {
-  await section.locator('.person.on .face').click();
   const second = section.locator('.person', { hasNot: frame.locator('.name', { hasText: firstName }) }).first();
   await second.locator('.name').click();
   await frame.locator('dialog[open] input[type=text]').fill(firstName);

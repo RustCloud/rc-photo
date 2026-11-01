@@ -856,6 +856,112 @@ svg.icon {
   font: inherit;
   font-size: 14px;
 }
+.person-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+.attach-picks {
+  display: grid;
+  gap: 2px;
+  max-height: 220px;
+  margin-top: 8px;
+  overflow: auto;
+}
+.attach-picks[hidden],
+.attach-whole[hidden] {
+  display: none;
+}
+.attach-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  text-align: left;
+}
+.attach-pick:hover {
+  background: var(--surface);
+}
+.attach-pick.on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.attach-whole {
+  margin: 6px 0 0;
+  font-size: 13px;
+}
+.cover-section {
+  margin: 10px 0 4px;
+}
+.cover-section summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--muted);
+}
+.cover-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 180px;
+  margin-top: 8px;
+  overflow: auto;
+}
+.cover-pick {
+  padding: 2px;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: none;
+  line-height: 0;
+}
+.cover-pick.on {
+  border-color: var(--accent);
+}
+.person-dialog {
+  width: min(420px, calc(100vw - 32px));
+}
+/* Circles on faces in the viewer: inside .media, they move and zoom with
+   the picture; --z keeps their lines thin. */
+.viewer .faces {
+  position: absolute;
+  inset: 0;
+}
+.viewer .faces[hidden] {
+  display: none;
+}
+.face-ring {
+  position: absolute;
+  padding: 0;
+  border: calc(2px / var(--z, 1)) solid rgb(255 255 255 / 0.9);
+  border-radius: 50%;
+  background: none;
+  box-shadow: 0 0 0 calc(1px / var(--z, 1)) rgb(0 0 0 / 0.35);
+  cursor: pointer;
+}
+.face-ring.unknown {
+  border-style: dashed;
+}
+.face-ring:hover {
+  border-color: var(--accent);
+}
+.face-label {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  margin-top: calc(4px / var(--z, 1));
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: rgb(0 0 0 / 0.6);
+  color: #fff;
+  font-size: calc(12px / var(--z, 1));
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
 .people-chips {
   display: flex;
   flex-wrap: wrap;
