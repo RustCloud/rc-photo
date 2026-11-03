@@ -159,8 +159,24 @@ await frame.locator('.viewer .info .people-chips').waitFor({ timeout: 10_000 });
 const rings = frame.locator('.viewer .faces .face-ring');
 await rings.first().waitFor({ timeout: 10_000 });
 await page.waitForTimeout(500);
+// Circles show only near the pointer; the bar's button shows them all.
+const near = () => frame.locator('.viewer .face-ring.near').count();
+await page.mouse.move(5, 300);
+const away = await near();
+await rings.first().hover({ force: true });
+const over = await near();
+const box = await rings.first().boundingBox();
+await page.mouse.move(box.x + box.width + 12, box.y + box.height / 2);
+const beside = await near();
+await page.mouse.move(5, 300);
+console.log(`circles near the pointer: away ${away}, over a face ${over}, just beside it ${beside}, away again ${await near()}`);
+if (away !== 0 || over < 1 || beside < 1 || (await near()) !== 0) throw new Error('circles near the pointer');
+await frame.getByRole('button', { name: 'Всегда показывать лица' }).click();
+console.log(`all circles: ${await frame.locator('.viewer .faces.all').count()}`);
+await page.waitForTimeout(300);
 console.log(`viewer: people "${await frame.locator('.viewer .info .people-chips').innerText()}", circles ${await rings.count()}: ${(await frame.locator('.viewer .face-label').allInnerTexts()).join(', ')}`);
 await page.screenshot({ path: '/out/faces-viewer.png' });
+await frame.getByRole('button', { name: 'Всегда показывать лица' }).click();
 await page.keyboard.press('Escape');
 await frame.locator('.viewer').waitFor({ state: 'detached', timeout: 10_000 });
 await section.locator('.person.on .face').click();
@@ -174,6 +190,11 @@ const openPhoto = async (name) => {
   await frame.locator('.viewer .faces .face-ring').first().waitFor({ timeout: 10_000 });
 };
 const editor = frame.locator('dialog[open]');
+/** A hidden circle shows when the pointer comes near it, then takes the click. */
+const clickRing = async (ring) => {
+  await ring.hover({ force: true });
+  await ring.click();
+};
 const closeViewer = async () => {
   await page.keyboard.press('Escape');
   await frame.locator('.viewer').waitFor({ state: 'detached', timeout: 10_000 });
@@ -186,7 +207,7 @@ process.on('uncaughtException', async (e) => {
 
 // A face nobody has becomes a new person by its name; another face is attached to them.
 await openPhoto('biden_1.jpg');
-await frame.locator('.viewer .face-ring.unknown').first().click();
+await clickRing(frame.locator('.viewer .face-ring.unknown').first());
 await editor.locator('h2', { hasText: 'Кто это' }).waitFor();
 await editor.locator('input[type=text]').fill('biden');
 await page.screenshot({ path: '/out/faces-new-person.png' });
@@ -200,7 +221,7 @@ console.log(`biden by hand: ${biden?.id} in ${biden?.files.map((id) => ids[id]).
 await section.locator('.person .name', { hasText: 'biden' }).waitFor({ timeout: 10_000 });
 // A face nobody has, attached to a person; then "not this person" takes it off again.
 await openPhoto('obama_family.jpg');
-await frame.locator('.viewer .face-ring.unknown').first().click();
+await clickRing(frame.locator('.viewer .face-ring.unknown').first());
 await editor.getByRole('button', { name: 'Присоединить' }).click();
 await editor.locator('.attach-pick', { hasText: 'biden' }).click();
 await page.screenshot({ path: '/out/faces-attach.png' });
@@ -209,7 +230,7 @@ await frame.locator('.viewer .face-label', { hasText: 'biden' }).waitFor({ timeo
 console.log(`attached: labels ${(await frame.locator('.viewer .face-label').allInnerTexts()).join(', ')}`);
 now = await regrouped();
 console.log(`biden after attaching: ${now.find((p) => p.id === biden.id)?.files.map((id) => ids[id]).join(', ')}`);
-await frame.locator('.viewer .face-ring', { hasText: 'biden' }).click();
+await clickRing(frame.locator('.viewer .face-ring', { hasText: 'biden' }));
 await editor.getByRole('button', { name: 'Это не он' }).click();
 await frame.locator('.viewer .face-label', { hasText: 'biden' }).waitFor({ state: 'detached', timeout: 10_000 });
 console.log(`not this person: labels ${(await frame.locator('.viewer .face-label').allInnerTexts()).join(', ')}`);
@@ -223,8 +244,8 @@ await editor.locator('summary', { hasText: 'Лицо для аватара' }).c
 await editor.locator('.cover-pick').nth(1).click();
 await page.screenshot({ path: '/out/faces-avatar.png' });
 await editor.getByRole('button', { name: 'Сохранить' }).click();
-await page.waitForTimeout(300);
-console.log(`avatar chosen: ${JSON.stringify((await state()).names.covers)}`);
+({ s } = await until('avatar', (s) => Object.keys(s.names.covers).length > 0, 10_000));
+console.log(`avatar chosen: ${JSON.stringify(s.names.covers)}`);
 
 // Naming a second person with the same name merges them.
 if (people.length > 1) {

@@ -88,7 +88,9 @@
       notThem: 'Not this person',
       avatarTitle: 'Face to show',
       newPersonHint: 'A name makes a new person of this face; or attach it to someone.',
-      showFaces: 'Faces',
+      showFaces: 'Always show faces',
+      fullScreen: 'Full screen',
+      exitFullScreen: 'Exit full screen',
       showHidden: (n) => `Hidden: ${n}`,
       hideHidden: 'Hide them again',
       facesOff: 'Turn off',
@@ -244,7 +246,9 @@
       notThem: 'Это не он',
       avatarTitle: 'Лицо для аватара',
       newPersonHint: 'Имя сделает из этого лица нового человека; или присоедините его к кому-то.',
-      showFaces: 'Лица',
+      showFaces: 'Всегда показывать лица',
+      fullScreen: 'На весь экран',
+      exitFullScreen: 'Выйти из полноэкранного режима',
       showHidden: (n) => `Скрытые: ${n}`,
       hideHidden: 'Снова скрыть',
       facesOff: 'Выключить',
@@ -354,6 +358,8 @@
     pin: '<path d="M12 21s-6-5.7-6-11a6 6 0 0 1 12 0c0 5.3-6 11-6 11z"/><circle cx="12" cy="10" r="2.2"/>',
     file: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>',
     alert: '<path d="M12 4 2.5 20h19z"/><path d="M12 10v4M12 17v.01"/>',
+    expand: '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>',
+    shrink: '<path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5"/>',
     photos: '<rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/>',
   };
 
@@ -539,8 +545,8 @@
     }
     return facesCache.get(key);
   }
-  /** Whether the viewer draws circles on faces. */
-  let facesShown = true;
+  /** Whether the viewer draws all circles on faces; otherwise only near the pointer. */
+  let facesShown = false;
   /** The photos of each person filtered by, as people and names are now. */
   let personFilesCache = new Map();
   let showHiddenPeople = false;
@@ -2651,9 +2657,19 @@
   let viewer = null;
 
   function openViewer(index) {
-    viewer?.close(true);
+    viewer?.close(true, true);
     viewer = new Viewer(index);
   }
+
+  /**
+   * The viewer takes the whole browser window while it is open (API 0.2.14;
+   * older servers keep it in the panel's page area). The panel then keeps its
+   * own close button in the top right corner, over the viewer.
+   */
+  const ownsWindow = () => Boolean(rustcloud.setLayout) && context.layout !== 'full';
+
+  /** Whether the browser lets the page go full screen (the frame must allow it). */
+  const fullScreenWorks = () => Boolean(document.fullscreenEnabled && document.documentElement.requestFullscreen);
 
   /** Video codecs as the browser asks for them. */
   const CODECS = { h264: 'avc1.640028', hevc: 'hvc1.1.6.L120.90', av1: 'av01.0.08M.08', vp9: 'vp09.00.40.08', vp8: 'vp8' };
@@ -2861,8 +2877,12 @@
       this.infoOpen = innerWidth > 1100;
       this.view = { z: 1, x: 0, y: 0 };
       this.pointers = new Map();
+      this.window = ownsWindow();
+      // The tile's place means nothing once the page grows to the window.
+      const from = this.window ? null : this.tileRect(this.entry);
+      if (this.window) rustcloud.setLayout('full');
       this.build();
-      this.show(index, { from: this.tileRect(this.entry) });
+      this.show(index, { from });
       requestAnimationFrame(() => this.root.classList.add('open'));
     }
 
@@ -2886,7 +2906,7 @@
       this.stage.append(this.bar, this.prevButton, this.nextButton, this.status, this.strip);
       this.root = h(
         'div',
-        { class: 'viewer', role: 'dialog', 'aria-modal': 'true', tabindex: -1 },
+        { class: 'viewer' + (this.window ? ' window' : ''), role: 'dialog', 'aria-modal': 'true', tabindex: -1 },
         h('div', { class: 'backdrop' }, this.blur),
         this.stage,
         this.info,
@@ -2905,6 +2925,13 @@
       this.stage.addEventListener('pointerup', (event) => this.up(event));
       this.stage.addEventListener('pointercancel', (event) => this.up(event));
       this.stage.addEventListener('dblclick', (event) => this.doubleClick(event));
+      this.stage.addEventListener('pointermove', (event) => event.pointerType !== 'touch' && this.nearFaces(event));
+      this.stage.addEventListener('pointerleave', () => this.nearFaces(null));
+      this.onFullScreen = () => {
+        this.drawBar();
+        this.fit(false);
+      };
+      document.addEventListener('fullscreenchange', this.onFullScreen);
       this.root.addEventListener('mousemove', () => this.wake());
       this.wake();
     }
@@ -3070,7 +3097,7 @@
       const { width, height } = this.natural;
       const layer = h(
         'div',
-        { class: 'faces', hidden: !facesShown },
+        { class: 'faces' + (facesShown ? ' all' : '') },
         found.map((face) => {
           const [x, y, w, h_] = face.b;
           // A circle around the box, in parts of the picture.
@@ -3107,9 +3134,36 @@
 
     toggleFaces() {
       facesShown = !facesShown;
-      const layer = this.media.querySelector('.faces');
-      if (layer) layer.hidden = !facesShown;
+      this.media.querySelector('.faces')?.classList.toggle('all', facesShown);
       this.drawBar();
+    }
+
+    /**
+     * Shows the circles of faces near the pointer (null: none). Near is
+     * within the circle or a little around it, on screen.
+     */
+    nearFaces(event) {
+      for (const ring of this.media.querySelectorAll('.face-ring')) {
+        let near = false;
+        if (event) {
+          const box = ring.getBoundingClientRect();
+          const r = box.width / 2;
+          const distance = Math.hypot(event.clientX - (box.left + r), event.clientY - (box.top + box.height / 2));
+          near = distance <= r + Math.max(24, r / 2);
+        }
+        ring.classList.toggle('near', near);
+      }
+    }
+
+    /** The browser's full screen for the viewer, where the frame allows it. */
+    async toggleFullScreen() {
+      try {
+        if (document.fullscreenElement) await document.exitFullscreen();
+        else await this.root.requestFullscreen();
+      } catch (e) {
+        this.setStatus(t.error(e.message));
+      }
+      this.focus();
     }
 
     /** Opens from the tile: the picture grows out of it. */
@@ -3226,6 +3280,8 @@
       else if (dx < -80 && this.index < this.list.length - 1) this.go(1);
       else if (gesture.moved) this.fit(true);
       else if (!event.target.closest('.media')) this.close();
+      // A finger can't hover: a tap shows the faces around it.
+      else if (event.pointerType === 'touch') this.nearFaces(event);
     }
 
     go(step) {
@@ -3287,7 +3343,8 @@
     drawBar() {
       const entry = this.entry;
       const favorite = favorites.has(entry.id);
-      this.bar.replaceChildren(
+      // replaceChildren() would write the buttons that are missing as "null".
+      const buttons = [
         iconButton('close', t.close, () => this.close()),
         h(
           'div',
@@ -3303,8 +3360,14 @@
           : null,
         iconButton('download', t.download, () => this.download()),
         iconButton('trash', t.delete, () => this.deleteCurrent()),
+        fullScreenWorks()
+          ? document.fullscreenElement
+            ? iconButton('shrink', t.exitFullScreen, () => this.toggleFullScreen())
+            : iconButton('expand', t.fullScreen, () => this.toggleFullScreen())
+          : null,
         iconButton('info', t.info, () => this.toggleInfo()),
-      );
+      ];
+      this.bar.replaceChildren(...buttons.filter(Boolean));
     }
 
     toggleInfo() {
@@ -3429,14 +3492,19 @@
       }
     }
 
-    close(now = false) {
+    /** `keepWindow`: another viewer opens right away and keeps the whole window. */
+    close(now = false, keepWindow = false) {
       document.removeEventListener('keydown', this.onKey);
+      document.removeEventListener('fullscreenchange', this.onFullScreen);
       removeEventListener('resize', this.onResize);
       clearTimeout(this.idleTimer);
       if (viewer === this) viewer = null;
-      // None when the last file of the list was just deleted.
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      if (this.window && !keepWindow) rustcloud.setLayout('panel');
+      // None when the last file of the list was just deleted; the tile's
+      // place changes as the page goes back into the panel.
       const entry = this.entry;
-      const rect = now || !entry ? null : this.tileRect(entry);
+      const rect = now || !entry || this.window ? null : this.tileRect(entry);
       const finish = () => {
         this.cleanupMedia();
         this.root.remove();

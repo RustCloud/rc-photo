@@ -1,5 +1,5 @@
 id = "rc-photo"
-version = "0.5.1"
+version = "0.5.2"
 # The version of wit/app.wit: neural networks (use.onnx) need 0.2.13.
 api = "^0.2.13"
 

@@ -930,9 +930,8 @@ svg.icon {
   position: absolute;
   inset: 0;
 }
-.viewer .faces[hidden] {
-  display: none;
-}
+/* A circle shows near the pointer (or a tap), or all of them with the
+   bar's faces button; a hidden one can't be clicked. */
 .face-ring {
   position: absolute;
   padding: 0;
@@ -941,6 +940,15 @@ svg.icon {
   background: none;
   box-shadow: 0 0 0 calc(1px / var(--z, 1)) rgb(0 0 0 / 0.35);
   cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+.face-ring.near,
+.face-ring:focus-visible,
+.faces.all .face-ring {
+  opacity: 1;
+  pointer-events: auto;
 }
 .face-ring.unknown {
   border-style: dashed;
@@ -1086,6 +1094,14 @@ svg.icon {
   padding: 8px 12px;
   background: linear-gradient(rgb(0 0 0 / 0.55), transparent);
   transition: opacity 0.25s;
+}
+/* Over the whole window the panel's own close button sits in the top
+   right corner. */
+.viewer.window .bar {
+  padding-right: 56px;
+}
+.viewer.window .info header {
+  padding-right: 36px;
 }
 .viewer .bar .title {
   flex: 1;

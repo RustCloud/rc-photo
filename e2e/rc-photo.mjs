@@ -284,11 +284,26 @@ await frame.locator('.search input').fill('');
 await page.waitForTimeout(600);
 
 // The viewer: open, wait for the original, info, next, favourite.
+const frameSize = async () => {
+  const b = await page.locator('iframe').first().boundingBox();
+  return `${Math.round(b.width)}×${Math.round(b.height)} at ${Math.round(b.x)},${Math.round(b.y)}`;
+};
+const inPanel = await frameSize();
 await frame.locator('.tile[aria-label$=".jpg"]').first().click();
 await frame.locator('.viewer .media img.full.loaded').waitFor({ timeout: 20_000 });
 await page.waitForTimeout(600);
+// The viewer takes the whole window; full screen only where the frame allows it.
+const fullScreen = await frame.locator('body').evaluate(() => document.fullscreenEnabled);
+console.log(`page ${inPanel} → viewer ${await frameSize()} (window ${JSON.stringify(page.viewportSize())}), over the window ${await frame.locator('.viewer.window').count()}, full screen allowed ${fullScreen}, button ${await frame.getByRole('button', { name: 'На весь экран' }).count()}`);
+if (fullScreen) {
+  await frame.getByRole('button', { name: 'На весь экран' }).click();
+  await page.waitForTimeout(500);
+  console.log(`full screen: ${await frame.locator('body').evaluate(() => document.fullscreenElement?.className ?? null)}`);
+  await frame.getByRole('button', { name: 'Выйти из полноэкранного режима' }).click();
+  await page.waitForTimeout(500);
+}
 await page.screenshot({ path: '/out/light-viewer.png' });
-console.log(`viewer: "${(await frame.locator('.viewer .bar .title').innerText()).replace(/\s+/g, ' ')}"`);
+console.log(`viewer: "${(await frame.locator('.viewer .bar .title').innerText()).replace(/\s+/g, ' ')}", bar "${(await frame.locator('.viewer .bar').innerText()).replace(/\s+/g, ' ')}"`);
 console.log(`info: ${(await frame.locator('.viewer .info').innerText()).replace(/\s+/g, ' ').slice(0, 300)}`);
 await page.keyboard.press('ArrowRight');
 await page.waitForTimeout(800);
@@ -302,7 +317,7 @@ console.log(`zoom transform: ${await frame.locator('.viewer .media').evaluate((e
 await page.screenshot({ path: '/out/light-zoom.png' });
 await page.keyboard.press('Escape');
 await page.waitForTimeout(600);
-console.log(`closed: viewers left ${await frame.locator('.viewer').count()}, favorites ${JSON.stringify((await json(await api.get('/app/rc-photo/api/state', { headers: H }), 'state')).favorites.length)}`);
+console.log(`closed: page ${await frameSize()}, viewers left ${await frame.locator('.viewer').count()}, favorites ${JSON.stringify((await json(await api.get('/app/rc-photo/api/state', { headers: H }), 'state')).favorites.length)}`);
 
 // HEIC: shown by its preview. Video: plays.
 for (const name of ['photo.heic', 'video.mp4', 'hevc.mkv']) {
