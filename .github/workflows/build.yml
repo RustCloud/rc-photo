@@ -1,0 +1,132 @@
+name: Build
+
+# Checks the plugin and builds its archive for Administration → Plugins → Install.
+#
+# - every push, pull request and "Run workflow": versions, fmt, clippy, tests,
+#   the page's JavaScript, the build; the artifact rc-photo-<version> downloads
+#   as a zip that installs as it is;
+# - a tag v<version> (the version of manifest.toml, e.g. v0.1.0) also publishes
+#   a GitHub release with rc-photo.zip and its SHA-256.
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+jobs:
+  build:
+    name: Check, build, archive
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.versions.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # One version everywhere, and the WIT the manifest says it is built against.
+      - name: Versions
+        id: versions
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' manifest.toml)
+          crate=$(sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml)
+          api=$(sed -n 's/^api = "^\(.*\)"/\1/p' manifest.toml)
+          wit=$(sed -n 's/^package rustcloud:app@\(.*\);/\1/p' wit/app.wit)
+          echo "manifest $version, Cargo.toml $crate, api ^$api, wit/app.wit $wit"
+          [ "$version" = "$crate" ] || { echo "::error::manifest.toml $version ≠ Cargo.toml $crate"; exit 1; }
+          [ "$api" = "$wit" ] || { echo "::error::manifest api ^$api ≠ wit/app.wit $wit"; exit 1; }
+          case "$GITHUB_REF" in
+            refs/tags/v*)
+              [ "${GITHUB_REF#refs/tags/v}" = "$version" ] || {
+                echo "::error::tag ${GITHUB_REF#refs/tags/} ≠ v$version of manifest.toml"; exit 1; } ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Format
+        run: cargo fmt -- --check
+
+      - name: Clippy
+        run: cargo clippy --release --locked --target wasm32-wasip2 -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Page
+        run: |
+          node --check ui/app.js
+          node --check e2e/rc-photo.mjs
+          node --check e2e/faces.mjs
+
+      - name: Build
+        run: |
+          cargo build --release --locked --target wasm32-wasip2
+          mkdir -p dist/rc-photo
+          cp manifest.toml dist/rc-photo/
+          cp target/wasm32-wasip2/release/rc_photo.wasm dist/rc-photo/app.wasm
+          ls -l dist/rc-photo
+
+      # GitHub hands out an artifact as a zip of its files: the folder's
+      # manifest.toml and app.wasm make that zip the plugin archive itself
+      # (a zip inside would be refused: "the archive has no manifest.toml").
+      - name: Keep the archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: rc-photo-${{ steps.versions.outputs.version }}
+          path: dist/rc-photo/
+          if-no-files-found: error
+
+  release:
+    name: Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: rc-photo-${{ needs.build.outputs.version }}
+          path: dist/rc-photo
+
+      - name: Archive
+        run: |
+          cd dist
+          zip -qr rc-photo.zip rc-photo
+          sha256sum rc-photo.zip > rc-photo.zip.sha256
+          cat rc-photo.zip.sha256
+
+      # The release of this tag, or a new one; a rerun replaces its files.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 ||
+            gh release create "$TAG" --verify-tag --title "$TAG" \
+              --notes "Install rc-photo.zip on Administration → Plugins."
+          gh release upload "$TAG" dist/rc-photo.zip dist/rc-photo.zip.sha256 --clobber
