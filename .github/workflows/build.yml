@@ -5,8 +5,10 @@ name: Build
 # - every push, pull request and "Run workflow": versions, fmt, clippy, tests,
 #   the page's JavaScript, the build; the artifact rc-photo-<version> downloads
 #   as a zip that installs as it is;
-# - a tag v<version> (the version of manifest.toml, e.g. v0.1.0) also publishes
-#   a GitHub release with rc-photo.zip and its SHA-256.
+# - a build of main publishes the GitHub release v<version> (the version of
+#   manifest.toml, e.g. v0.1.0) with rc-photo.zip and its SHA-256, once per
+#   version: the tag is made on that commit; a pushed tag v<version> publishes
+#   (or refreshes) its release too.
 
 on:
   push:
@@ -99,34 +101,56 @@ jobs:
           path: dist/rc-photo/
           if-no-files-found: error
 
+  # A build of main whose manifest version has no release yet publishes one
+  # (and its tag v<version>); a pushed tag v<version> publishes or refreshes its own.
   release:
     name: Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.ref == 'refs/heads/main' && github.event_name != 'pull_request')
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - name: Tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = branch ] && gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists: nothing to publish (raise the version to release)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/download-artifact@v4
+        if: steps.tag.outputs.skip != 'true'
         with:
           name: rc-photo-${{ needs.build.outputs.version }}
           path: dist/rc-photo
 
       - name: Archive
+        if: steps.tag.outputs.skip != 'true'
         run: |
           cd dist
           zip -qr rc-photo.zip rc-photo
           sha256sum rc-photo.zip > rc-photo.zip.sha256
           cat rc-photo.zip.sha256
 
-      # The release of this tag, or a new one; a rerun replaces its files.
+      # The release of this tag, or a new one (from main, its tag is made on
+      # this commit); a rerun replaces its files.
       - name: Publish
+        if: steps.tag.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
           gh release view "$TAG" >/dev/null 2>&1 ||
-            gh release create "$TAG" --verify-tag --title "$TAG" \
+            gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" \
               --notes "Install rc-photo.zip on Administration → Plugins."
           gh release upload "$TAG" dist/rc-photo.zip dist/rc-photo.zip.sha256 --clobber

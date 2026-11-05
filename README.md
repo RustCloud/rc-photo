@@ -120,8 +120,10 @@ cp target/wasm32-wasip2/release/rc_photo.wasm dist/rc-photo/app.wasm
 
 В GitHub Actions это делает [.github/workflows/build.yml](.github/workflows/build.yml): на каждый
 push и pull request — проверка версий (`manifest.toml` = `Cargo.toml`, `api` = версия `wit/app.wit`), fmt, clippy,
-тесты, синтаксис JS, сборка; артефакт `rc-photo-<версия>` скачивается zip-архивом, который ставится как есть. Тег `v<версия манифеста>`
-(`v0.3.0`) ещё и публикует релиз GitHub с `rc-photo.zip` и его SHA-256.
+тесты, синтаксис JS, сборка; артефакт `rc-photo-<версия>` скачивается zip-архивом, который ставится как есть.
+Сборка `main` публикует релиз `v<версия манифеста>` (`v0.3.0`) с `rc-photo.zip` и его SHA-256 — один раз
+на версию, тег ставится на этот коммит; чтобы выпустить новый релиз, поднимите версию. Запушенный тег
+`v<версия>` тоже публикует (или обновляет) свой релиз.
 
 `wit/app.wit` — копия `crates/plugin-api/wit/app.wit` сервера той версии, что в `manifest.toml`.
 
