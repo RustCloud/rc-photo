@@ -87,6 +87,18 @@ pub fn handle(method: &str, path: &str, query: &str, body: &[u8]) -> Response {
                     _ => error(405, "method not allowed"),
                 };
             }
+            if let Some(id) = path.strip_prefix("/similar/") {
+                return match method {
+                    "GET" => crate::analysis::similar(id),
+                    _ => error(405, "method not allowed"),
+                };
+            }
+            if let Some(id) = path.strip_prefix("/text/") {
+                return match method {
+                    "GET" => crate::analysis::text_of(id),
+                    _ => error(405, "method not allowed"),
+                };
+            }
             if let Some(id) = path.strip_prefix("/upload-folder/") {
                 return match method {
                     "PUT" => remember_upload_folder(id),
@@ -169,6 +181,8 @@ fn state() -> Response {
     };
     ok(json!({
         "faces": faces::status(),
+        "analysis": crate::analysis::status(),
+        "stories": crate::models::Switches::read().stories,
         "people": people,
         "names": people::Names::read(),
         "folders": folders,

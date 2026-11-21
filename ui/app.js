@@ -80,6 +80,13 @@
       facesNoEngine: 'This server has no engine for neural networks.',
       facesFailed: 'The neural networks could not be started.',
       facesLooking: (n) => `Looking for faces: ${n} left`,
+      analysing: (n) => `Analysing photos: ${n} left`,
+      analysisFailed: 'Photo analysis could not start its neural network.',
+      similar: 'Similar photos',
+      similarTo: (name) => `Like ${name}`,
+      similarNotReady: 'This photo has not been analysed yet.',
+      similarNone: 'No similar photos.',
+      textInPhoto: 'Text in the photo',
       facesNone: 'No people yet: a person appears once their face is in a few photos.',
       nameN: (n) => `Name ${n}`,
       attach: 'Attach',
@@ -238,6 +245,13 @@
       facesNoEngine: 'На этом сервере нет движка нейросетей.',
       facesFailed: 'Не удалось запустить нейросети.',
       facesLooking: (n) => `Ищу лица: осталось ${n}`,
+      analysing: (n) => `Анализ фото: осталось ${n}`,
+      analysisFailed: 'Анализ фото не смог запустить нейросеть.',
+      similar: 'Похожие фото',
+      similarTo: (name) => `Похожие на ${name}`,
+      similarNotReady: 'Это фото ещё не проанализировано.',
+      similarNone: 'Похожих фото нет.',
+      textInPhoto: 'Текст на фото',
       facesNone: 'Людей пока нет: человек появится, когда его лицо найдётся на нескольких фото.',
       nameN: (n) => `Name ${n}`,
       attach: 'Присоединить',
@@ -360,6 +374,8 @@
     alert: '<path d="M12 4 2.5 20h19z"/><path d="M12 10v4M12 17v.01"/>',
     expand: '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>',
     shrink: '<path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5"/>',
+    similar: '<rect x="3" y="7" width="12" height="12" rx="2"/><path d="M9 7V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-4"/>',
+    text: '<path d="M5 6h14M12 6v13M9 19h6"/>',
     photos: '<rect x="3" y="3" width="8" height="8" rx="2"/><rect x="13" y="3" width="8" height="8" rx="2"/><rect x="3" y="13" width="8" height="8" rx="2"/><rect x="13" y="13" width="8" height="8" rx="2"/>',
   };
 
@@ -524,6 +540,8 @@
   let ffmpeg = true;
   /** Faces: `{enabled, state}` from the plugin. */
   let faces = { enabled: false };
+  /** Photo analysis (similar photos, text in photos), as the administrator set it. */
+  let analysis = { enabled: false };
   /** People as the last grouping left them, by id; names are the user's. */
   let people = new Map();
   let names = { names: {}, hidden: [], merged: {} };
@@ -631,6 +649,7 @@
     progress = state.progress || {};
     ffmpeg = state.ffmpeg;
     faces = state.faces ?? { enabled: false };
+    analysis = state.analysis ?? { enabled: false };
     names = state.names ?? names;
     await loadPeople(state.people);
     personFilesCache = new Map();
@@ -712,7 +731,11 @@
     return [...merged.values()].sort((a, b) => b.files.size - a.files.size || a.id.localeCompare(b.id));
   }
 
-  const waiting = () => Object.values(progress).reduce((sum, kind) => sum + kind.waiting, 0);
+  /** Analysis jobs change nothing in the feed: they don't count as processing or keep the page polling. */
+  const ANALYSIS_KINDS = ['clip', 'ocr'];
+  const waiting = () =>
+    Object.entries(progress).reduce((sum, [kind, counts]) => sum + (ANALYSIS_KINDS.includes(kind) ? 0 : counts.waiting), 0);
+  const analysing = () => ANALYSIS_KINDS.reduce((sum, kind) => sum + (progress[kind]?.waiting ?? 0), 0);
   const failedCount = () => progress.media?.failed ?? 0;
 
   /** Reloads the state while the jobs run, so new photos appear as they're done. */
@@ -749,6 +772,8 @@
     orientation: new Set(),
     /** Person ids: photos with all of them. */
     people: new Set(),
+    /** Photos like one: `{ name, ids }`, the photo itself among them. */
+    similar: null,
   };
   let sortNewest = true;
 
@@ -779,6 +804,7 @@
     if (filters.to && entry._day > filters.to) return false;
     if (filters.q && !filters.q.split(/\s+/).every((word) => entry._search.includes(word))) return false;
     for (const id of filters.people) if (!personFiles(id).has(entry.id)) return false;
+    if (filters.similar && !filters.similar.ids.has(entry.id)) return false;
     if (skip !== 'folders' && filters.folders.size && !inFolders(entry, filters.folders)) return false;
     for (const [name, value] of Object.entries(FACETS)) {
       if (name !== skip && filters[name].size && !filters[name].has(value(entry))) return false;
@@ -807,6 +833,7 @@
     if (filters.from) active.push(['from', `${t.from} ${filters.from}`]);
     if (filters.to) active.push(['to', `${t.to} ${filters.to}`]);
     for (const id of filters.people) active.push(['people', personName(id), id]);
+    if (filters.similar) active.push(['similar', t.similarTo(filters.similar.name)]);
     for (const name of ['years', 'cameras', 'lenses', 'folders', 'formats', 'orientation']) {
       for (const value of filters[name]) active.push([name, name === 'orientation' ? t[value] : value, value]);
     }
@@ -817,6 +844,7 @@
     if (name === 'type') filters.type = 'all';
     else if (name === 'favorites' || name === 'gps') filters[name] = false;
     else if (name === 'from' || name === 'to') filters[name] = '';
+    else if (name === 'similar') filters.similar = null;
     else filters[name].delete(value);
   }
 
@@ -1115,6 +1143,7 @@
       ),
       h('section', {}, toggle('favorites', t.onlyFavorites), toggle('gps', t.withLocation)),
       peopleSection(),
+      analysisSection(),
       h('section', {}, h('h3', {}, t.period), h('div', { class: 'dates' }, date('from', t.from), date('to', t.to))),
       years.length
         ? h(
@@ -1160,6 +1189,20 @@
             ),
           )
         : null,
+    );
+  }
+
+  /** How photo analysis goes, while it has work or can't run. */
+  function analysisSection() {
+    if (!analysis.enabled) return null;
+    const left = analysing();
+    const failed = Object.values(analysis.parts ?? {}).some((state) => String(state).startsWith('failed'));
+    if (!left && !failed) return null;
+    return h(
+      'section',
+      {},
+      left ? h('p', { class: 'hint', style: 'margin:0' }, h('span', { class: 'spinner' }), t.analysing(left)) : null,
+      failed ? h('p', { class: 'hint', style: 'margin:0' }, t.analysisFailed) : null,
     );
   }
 
@@ -3358,6 +3401,7 @@
         this.media?.querySelector('.faces')
           ? iconButton('person', t.showFaces, () => this.toggleFaces(), { class: 'icon-btn' + (facesShown ? ' on' : '') })
           : null,
+        analysis.enabled && !entry.video ? iconButton('similar', t.similar, () => this.showSimilar()) : null,
         iconButton('download', t.download, () => this.download()),
         iconButton('trash', t.delete, () => this.deleteCurrent()),
         fullScreenWorks()
@@ -3368,6 +3412,25 @@
         iconButton('info', t.info, () => this.toggleInfo()),
       ];
       this.bar.replaceChildren(...buttons.filter(Boolean));
+    }
+
+    /** The feed of photos like this one, most alike or not, in its usual order. */
+    async showSimilar() {
+      const entry = this.entry;
+      try {
+        const found = await api('GET', `/similar/${encodeURIComponent(entry.id)}`);
+        if (this.entry !== entry) return;
+        if (!found.ready || !found.ids.length) {
+          this.setStatus(found.ready ? t.similarNone : t.similarNotReady);
+          setTimeout(() => this.entry === entry && this.setStatus(''), 2500);
+          return;
+        }
+        filters.similar = { name: entry.name, ids: new Set([entry.id, ...found.ids]) };
+        this.close();
+        refresh({ keepScroll: false });
+      } catch (e) {
+        this.setStatus(t.error(e.message));
+      }
     }
 
     toggleInfo() {
@@ -3412,6 +3475,25 @@
       ];
       this.info.replaceChildren(...rows.filter(Boolean));
       if (faces.enabled && !entry.video) this.drawPeople(entry);
+      if (analysis.enabled && !entry.video) this.drawText(entry);
+    }
+
+    /** The text read in the photo, if any. */
+    async drawText(entry) {
+      let found;
+      try {
+        found = await api('GET', `/text/${encodeURIComponent(entry.id)}`);
+      } catch {
+        return;
+      }
+      if (this.entry !== entry || !found.lines?.length) return;
+      const row = h(
+        'div',
+        { class: 'info-row' },
+        icon('text'),
+        h('div', {}, h('div', { class: 'main' }, found.lines.join(' · ')), h('div', { class: 'sub' }, t.textInPhoto)),
+      );
+      this.info.append(row);
     }
 
     /** Who is in the photo: a chip per person shows all their photos. */

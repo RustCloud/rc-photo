@@ -82,6 +82,7 @@ jobs:
           node --check ui/app.js
           node --check e2e/rc-photo.mjs
           node --check e2e/faces.mjs
+          node --check e2e/vision.mjs
 
       - name: Build
         run: |

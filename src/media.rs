@@ -104,8 +104,10 @@ pub fn run_media(jobs: &[Job]) -> Vec<Outcome> {
     if let Err(err) = shards.save() {
         return jobs.iter().map(|_| Outcome::Retry(format!("index: {err:?}"))).collect();
     }
-    // Their faces follow: found, found again, or forgotten.
-    faces::index_changed(&jobs.iter().map(|job| job.key.clone()).collect::<Vec<_>>());
+    // Their faces and analysis follow: found, found again, or forgotten.
+    let ids: Vec<String> = jobs.iter().map(|job| job.key.clone()).collect();
+    faces::index_changed(&ids);
+    crate::analysis::index_changed(&ids);
     results.into_iter().map(outcome).collect()
 }
 
@@ -241,7 +243,9 @@ fn prune() -> Result<(), Problem> {
     let mut shards: Shards<AppData> = Shards::new(AppData);
     let removed = shards.remove_where(|entry| !roots.contains(&entry.root)).map_err(later)?;
     shards.save().map_err(later)?;
-    faces::index_changed(&removed.iter().map(|entry| entry.id.clone()).collect::<Vec<_>>());
+    let ids: Vec<String> = removed.iter().map(|entry| entry.id.clone()).collect();
+    faces::index_changed(&ids);
+    crate::analysis::index_changed(&ids);
     for entry in removed {
         AppData.delete(&thumb_path(&entry.id)).map_err(later)?;
         AppData.delete(&preview_path(&entry.id)).map_err(later)?;

@@ -3,7 +3,7 @@
 // The server instantiates the app for each request to its routes
 // (`/app/<id>/...`) and calls `handle`. The app reaches the server only
 // through the interfaces it imports here; everything else is denied.
-package rustcloud:app@0.2.13;
+package rustcloud:app@0.2.20;
 
 interface types {
     /// An HTTP request to the app's routes.
@@ -60,7 +60,8 @@ interface appdata {
         no-space,
         /// The file is larger than the app may read at once (`limits`).
         too-large,
-        /// A file is in the way where a folder is needed.
+        /// A file is in the way where a folder is needed; for
+        /// `write-if-match`, the file changed since it was read.
         conflict,
         other(string),
     }
@@ -81,6 +82,11 @@ interface appdata {
     read-range: func(path: string, offset: u64, length: u64) -> result<list<u8>, error>;
     /// Creates or replaces the file, and the folders on the way.
     write: func(path: string, data: list<u8>) -> result<entry, error>;
+    /// Writes only if the file still has the `etag` it was read with; an
+    /// empty `if-match` writes only if there is no such file yet. Otherwise
+    /// `conflict`: someone wrote in between, e.g. the app's page and its job
+    /// at once (since 0.2.19).
+    write-if-match: func(path: string, data: list<u8>, if-match: string) -> result<entry, error>;
     /// Contents of a folder; `""` is the app's folder itself.
     %list: func(dir: string) -> result<list<entry>, error>;
     /// Deletes a file, or a folder with everything inside it.
@@ -104,7 +110,8 @@ interface files {
         no-space,
         /// The file is larger than the app may read at once (`limits`).
         too-large,
-        /// The name is taken in that folder.
+        /// The name is taken in that folder; for `write-if-match`, the file
+        /// changed since; for any change, another app holds a lock on it.
         conflict,
         other(string),
     }
@@ -138,6 +145,67 @@ interface files {
     create-folder: func(parent-id: string, name: string) -> result<node, error>;
     /// Deletes a file, or a folder with everything inside it.
     delete: func(id: string) -> result<_, error>;
+
+    /// Replaces the content of a file only if it still has the ETag
+    /// `if-match`; `conflict` if it changed (since 0.2.14).
+    write-if-match: func(id: string, data: list<u8>, if-match: string) -> result<node, error>;
+
+    /// Replaces the content of a file with the body of the request the app
+    /// is answering, streamed by the server without passing through the app;
+    /// with `if-match`, only if the file still has that ETag. Works for any
+    /// body, and is the only way to save one too large to be given to the app
+    /// (`large-bodies` in the manifest, header `x-rustcloud-body-size`).
+    /// `other` outside a request or without a body (since 0.2.14).
+    write-request-body: func(id: string, if-match: option<string>) -> result<node, error>;
+
+    /// A lock on a file (since 0.2.14). While it lasts, only the app that
+    /// holds it changes or deletes the file; the panel and other apps get
+    /// `conflict`. Renaming and moving still work.
+    record file-lock {
+        /// What the app named it, e.g. a WOPI lock id.
+        lock-id: string,
+        app-id: string,
+        /// The user it was taken for (UUID).
+        user-id: string,
+        /// RFC 3339.
+        expires-at: string,
+    }
+
+    variant lock-error {
+        no-user,
+        not-found,
+        /// The app may only read the file, or it is a folder.
+        read-only,
+        /// Someone else holds another lock on the file: this one.
+        locked(file-lock),
+        other(string),
+    }
+
+    /// Takes the lock `lock-id` on a file for `seconds` (at most an hour),
+    /// or renews it if the app holds it already.
+    lock: func(id: string, lock-id: string, seconds: u32) -> result<file-lock, lock-error>;
+    /// Ends the lock `lock-id`; `locked` if another lock is held, nothing
+    /// if there is none.
+    unlock: func(id: string, lock-id: string) -> result<_, lock-error>;
+    /// The lock held on a file, if any.
+    get-lock: func(id: string) -> result<option<file-lock>, error>;
+
+    /// An earlier content of a file (since 0.2.14).
+    record version {
+        id: string,
+        size: u64,
+        etag: string,
+        /// When this content was written, RFC 3339.
+        modified-at: string,
+        /// When it was replaced, RFC 3339.
+        created-at: string,
+    }
+
+    /// Earlier versions of a file, newest first.
+    versions: func(id: string) -> result<list<version>, error>;
+    /// Up to `length` bytes of a version from `offset`, at most
+    /// `data-bytes` (`limits`) at once.
+    read-version: func(id: string, version-id: string, offset: u64, length: u64) -> result<list<u8>, error>;
 }
 
 /// Folders of their AppData other users shared with the user the request came
@@ -189,6 +257,12 @@ interface shares {
     delete: func(share-id: string, path: string) -> result<_, error>;
     /// Gives the share up: the folder is gone for this user, the owner keeps it.
     leave: func(share-id: string) -> result<_, error>;
+
+    /// Ends a share of a file or a public link the user made through this
+    /// app (`rustcloud.shareFile`, `rustcloud.shareLink`, since 0.2.19):
+    /// not one made in Files or through another app. Works in jobs too —
+    /// it only takes access away. `not-found` for any other id.
+    unshare: func(share-id: string) -> result<_, error>;
 }
 
 /// The app's settings for the whole server, which the administrator fills
@@ -196,8 +270,9 @@ interface shares {
 /// (since 0.2.2).
 interface settings {
     /// A JSON object, key → value: `true`, a number, a string or a list of
-    /// strings. Settings never filled in are missing. Secrets (API keys) are
-    /// included: the app needs them, the browser never gets them back.
+    /// strings. A setting left empty has the manifest's `default` (since
+    /// 0.2.20), or is missing without one. Secrets (API keys) are included:
+    /// the app needs them, the browser never gets them back.
     values: func() -> string;
 }
 
@@ -267,6 +342,13 @@ interface links {
     /// `use.ffmpeg`; otherwise, or for a file that is no video, `other`.
     video-stream: func(target: target, mode: stream-mode) -> result<string, error>;
 
+    /// A link to a small picture (WebP) of a file someone shared through
+    /// this app (`rustcloud.shareFile`) and the user reaches: the
+    /// recipient's chat shows a preview of an attachment without the app
+    /// reading the file (since 0.2.19). `not-found` for other files and
+    /// files without a picture (no media engine, not a photo or video).
+    thumbnail: func(file-id: string) -> result<string, error>;
+
     /// A link the app's page uploads one file to (since 0.2.12): it `POST`s
     /// the file's bytes as the body to `/api/v1/app-links/…` and gets the
     /// new file as JSON (`201`). The file goes to the server as a stream,
@@ -277,6 +359,51 @@ interface links {
     /// be tried again. `not-found` for a folder the app can't see, `other`
     /// when it may only read it or the name is invalid or taken.
     upload: func(folder: string, name: string, overwrite: bool) -> result<string, error>;
+
+    /// A link the app's page uploads a new content of a file to (since
+    /// 0.2.14), as `upload` does: a stream that never passes through the
+    /// app, kept as a version of the file. With `if-match`, the upload
+    /// fails (`409 FILE_CHANGED`) if the file changed meanwhile. `file` is a
+    /// file the user gave the app to change.
+    replace: func(file: string, if-match: option<string>) -> result<string, error>;
+}
+
+/// Tokens for other servers (since 0.2.14). An editor such as Collabora
+/// Online calls the app's routes back for the file the user opened (WOPI),
+/// without the user's session. The app gives it a token for that one file;
+/// it sends it as `?access_token=…` or `Authorization: Bearer …`, and the
+/// server calls the app as the user, reaching only that file. A token works
+/// until it runs out and while the user's access for the app to the file is
+/// in force; each call keeps a session of an opened file alive.
+interface tokens {
+    variant error {
+        /// No user, or the request itself came with a token.
+        no-user,
+        /// A file the app can't reach.
+        not-found,
+        /// The app may only read the file, and the token was to change it.
+        read-only,
+        other(string),
+    }
+
+    record token {
+        token: string,
+        /// RFC 3339.
+        expires-at: string,
+    }
+
+    /// What the token of this request allows.
+    record scope {
+        file: string,
+        write: bool,
+    }
+
+    /// A token for `file`, to read or also change it, for `seconds` (at
+    /// most 12 hours).
+    issue: func(file: string, write: bool, seconds: u32) -> result<token, error>;
+    /// The scope of the token this request came with; none for a request of
+    /// the user (a session, an app password).
+    current: func() -> option<scope>;
 }
 
 /// HTTP requests to other servers (since 0.2.3): only to the addresses the
@@ -360,6 +487,8 @@ interface storage {
 /// `app-with-jobs`). Kinds and batch sizes are declared in the manifest
 /// (`[[jobs]]`).
 interface jobs {
+    use types.{user};
+
     record new-job {
         /// One of the manifest's `[[jobs]]`.
         kind: string,
@@ -408,6 +537,90 @@ interface jobs {
     add: func(jobs: list<new-job>) -> result<_, error>;
     /// The user's jobs of this app, by kind.
     progress: func() -> result<list<kind-progress>, error>;
+
+    /// Who added a job of the batch being run, and when (since 0.2.19).
+    record origin {
+        /// The user of the batch, or, for a kind of `permissions.deliver`,
+        /// the user who added it with `add-for`. Set by the server.
+        %from: user,
+        /// RFC 3339, UTC; set by the server. A retried job keeps it, so jobs
+        /// may run out of this order: sort by it where order matters.
+        created-at: string,
+    }
+
+    /// One per job of the batch `run-batch` got, in the same order; empty
+    /// outside a batch (since 0.2.19).
+    origins: func() -> list<origin>;
+
+    variant send-error {
+        /// The request has no logged-in user.
+        no-user,
+        /// The kind isn't in `permissions.deliver`, more than 50 users, an
+        /// empty or too long key, or data over 64 KiB.
+        invalid(string),
+        /// The sender adds too many too fast, or too much waits for a user.
+        too-many,
+        other(string),
+    }
+
+    /// Adds a job of a kind of `permissions.deliver` for each user of `to`
+    /// (ids or usernames; the sender may be one of them), to run as that
+    /// user (since 0.2.19). The server sets who added it (`origins`).
+    /// Unknown users, users who blocked the sender and users the
+    /// administrator doesn't let the sender reach get nothing, with the same
+    /// answer: `add-for` doesn't tell which users exist. A job with the
+    /// kind and key of one the same sender added before and that still
+    /// waits replaces it. Jobs of these kinds run with AppData and `jobs`
+    /// only: no files, links, shares, storage, `http` or `use-*`, since
+    /// someone else chose what they work on.
+    add-for: func(to: list<string>, job: new-job) -> result<_, send-error>;
+
+    /// Stops `add-for` jobs and rings from this user (an id) to the user of
+    /// the request, in this app; `unblock` lets them through again (since 0.2.19).
+    block: func(user-id: string) -> result<_, error>;
+    unblock: func(user-id: string) -> result<_, error>;
+    /// Ids of the users the user of the request blocked in this app.
+    blocked: func() -> result<list<string>, error>;
+}
+
+/// What the panel shows the user for the app (since 0.2.19): a number by
+/// its entry in the side panel, and rings — a call or a message from
+/// someone, over any page of the cloud.
+interface notify {
+    variant error {
+        /// The request has no logged-in user.
+        no-user,
+        /// `ring` without `permissions.deliver`, more than 50 users, a
+        /// `ref` that isn't 1–200 letters, digits or `-_.:`, or from a job
+        /// someone else added.
+        invalid(string),
+        /// The sender rings too much.
+        too-many,
+        other(string),
+    }
+
+    /// What a ring is about; the panel writes the text in the user's
+    /// language: "Talk · alice: incoming call".
+    enum ring-kind {
+        call,
+        message,
+        invite,
+    }
+
+    /// Rings each of `to` (ids or usernames, at most 50) for `ttl-seconds`
+    /// (5–300; 0: 60) in every tab they have open, with the app's name and
+    /// the sender's username; "Open" leads to the app's page with
+    /// `?ring=<ref>`. The same people `jobs.add-for` reaches, with the same
+    /// answer for those it doesn't. Ringing them again with the same `ref`
+    /// starts anew. Needs `permissions.deliver`.
+    ring: func(to: list<string>, kind: ring-kind, ref: string, ttl-seconds: u32) -> result<_, error>;
+    /// Ends the sender's ring `ref` for each of `to`: the caller hung up.
+    cancel: func(to: list<string>, ref: string) -> result<_, error>;
+    /// Ends the rings `ref` for the user of the request, in all their
+    /// tabs: answered on another device.
+    dismiss: func(ref: string) -> result<_, error>;
+    /// The number by the app in the user's side panel; 0 hides it.
+    badge: func(count: u32) -> result<_, error>;
 }
 
 /// ffmpeg, run by the server for the app (since 0.2.7; manifest
@@ -708,6 +921,18 @@ interface use-onnx {
     audio-tensor: func(source: source, options: audio-options) -> result<tensor, error>;
 }
 
+/// The service of the app's `[[proxy]]` (since 0.2.15): an editor the
+/// browser reaches through this server's address, and that calls the app
+/// back itself (WOPI).
+interface proxy {
+    /// How the service reaches this server: `http://172.19.0.3:8080`, the
+    /// server's own address on its connection to the service. The app builds
+    /// the addresses the service calls back from it. None without a proxy,
+    /// while the service doesn't answer, or when the server can't tell (it
+    /// listens on another address).
+    self-url: func() -> option<string>;
+}
+
 world app {
     use types.{request, response, user};
 
@@ -718,11 +943,14 @@ world app {
     import settings;
     import limits;
     import links;
+    import tokens;
     import http;
     import storage;
     import jobs;
+    import notify;
     import use-ffmpeg;
     import use-onnx;
+    import proxy;
 
     /// Handles a request to the app's routes. `user` is none for requests
     /// without a session.
@@ -741,11 +969,14 @@ world app-with-jobs {
     import settings;
     import limits;
     import links;
+    import tokens;
     import http;
     import storage;
     import jobs;
+    import notify;
     import use-ffmpeg;
     import use-onnx;
+    import proxy;
 
     export handle: func(user: option<user>, request: request) -> response;
 

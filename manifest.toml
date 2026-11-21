@@ -1,7 +1,12 @@
 id = "rc-photo"
-version = "0.5.2"
-# The version of wit/app.wit: neural networks (use.onnx) need 0.2.13.
-api = "^0.2.13"
+version = "0.6.0"
+# The version of wit/app.wit: neural networks (use.onnx) need 0.2.13, settings
+# with defaults 0.2.20.
+api = "^0.2.20"
+
+# Batches of one user run one after another, whatever the administrator
+# sets as workers: they rewrite the same files of the user's AppData.
+one_batch_per_user = true
 
 [name]
 en = "Photos"
@@ -10,8 +15,9 @@ ru = "Фото"
 # Photos stay where they are: the user gives the app folders. Writing is
 # for deleting files from the gallery (since 0.2.0); it never changes them.
 # Thumbnails and the index are kept in the user's AppData of the app.
-# Faces (since 0.5.0, off until a user turns them on) run two neural
-# networks on the server; it downloads them from Hugging Face.
+# Faces (since 0.5.0, off until a user turns them on) and photo analysis
+# (since 0.6.0: similar photos, text in photos) run neural networks on the
+# server; it downloads them from Hugging Face.
 [permissions]
 files = "folder"
 files_write = true
@@ -33,8 +39,52 @@ url = "https://huggingface.co/immich-app/buffalo_l/resolve/main/recognition/mode
 sha256 = "4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43"
 size = 174383860
 
-# Batches of one user run one after another (workers = 1): the index is
-# rewritten by batches, never by two at once.
+# The administrator's switches, both on by default.
+[[server_settings]]
+key = "vision"
+kind = "bool"
+default = true
+label = { en = "Photo analysis: similar photos, text in photos", ru = "Анализ фото: похожие фото, текст на фото" }
+hint = { en = "A neural network looks at every photo once, in the background, a couple at a time.", ru = "Нейросеть один раз просматривает каждое фото, в фоне, по паре за раз." }
+
+[[server_settings]]
+key = "stories"
+kind = "bool"
+default = true
+label = { en = "Stories", ru = "Истории" }
+hint = { en = "A story a day from each user's photos.", ru = "Одна история в день из фото каждого пользователя." }
+
+# Photo analysis: SigLIP 2 B/16 (Apache-2.0), its picture half, as Immich
+# publishes it: a vector per photo, for similar photos. Another model:
+# change this block and build again (see src/models.rs).
+[[downloads]]
+path = "models/clip-visual.onnx"
+url = "https://huggingface.co/immich-app/ViT-B-16-SigLIP2__webli/resolve/5f3fc29104ebcf51e9d893af57604badd51a3ea6/visual/model.onnx"
+sha256 = "fee10c729875dd203d94f396ac3d664e301d39c977ef6d92e7f467a2a716f0b0"
+size = 371674292
+
+# Text in photos: PaddleOCR's PP-OCRv5 mobile (Apache-2.0), where text is...
+[[downloads]]
+path = "models/ocr-det.onnx"
+url = "https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx/resolve/e6f4fa85f00e168c862bc462aebca69eef9b3d3d/inference.onnx"
+sha256 = "a431985659dc921974177a95adcfbb90fd9e51989a5e04d70d0b75f597b6e61d"
+size = 4826518
+
+# ...and what it says, in Cyrillic and Latin letters, with its characters.
+[[downloads]]
+path = "models/ocr-rec.onnx"
+url = "https://huggingface.co/PaddlePaddle/cyrillic_PP-OCRv5_mobile_rec_onnx/resolve/2cef88145434beb8afa9dd82d77d799eb1ad7b29/inference.onnx"
+sha256 = "5371ee1ddaa7983cc62d0818d99e982b6804638c85e4f960d59a574094e172e5"
+size = 8048799
+
+[[downloads]]
+path = "models/ocr-rec.yml"
+url = "https://huggingface.co/PaddlePaddle/cyrillic_PP-OCRv5_mobile_rec_onnx/resolve/2cef88145434beb8afa9dd82d77d799eb1ad7b29/inference.yml"
+sha256 = "5c76cc91fa98410178a09f498db10050d0ec1634a660053d3005ab7be581f501"
+size = 6991
+
+# Batches of one user run one after another (one_batch_per_user); workers
+# is how many run at once for all users.
 [limits]
 memory = 2
 time = 1
@@ -67,6 +117,21 @@ time = 4
 kind = "faces"
 batch = 10
 time = 8
+memory = 4
+
+# Photo analysis, two photos a batch so other work gets its turn soon: a
+# vector per photo (SigLIP 2 takes a 224 px picture)...
+[[jobs]]
+kind = "clip"
+batch = 2
+time = 2
+
+# ...and the text in it: the detector on a picture of up to 960 px, the
+# recognizer on each line found (about 10 MB of pictures).
+[[jobs]]
+kind = "ocr"
+batch = 2
+time = 4
 memory = 4
 
 # Groups all the faces into people, after `faces` batches.

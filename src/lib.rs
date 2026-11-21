@@ -7,17 +7,23 @@
 //! thumbnails, originals and the index reach the page by links, past the
 //! plugin. If the user turns them on, [`faces`] finds faces through the
 //! server's neural networks and [`people`] groups them into people.
+//! Unless the administrator turns it off, [`analysis`] looks at every photo
+//! once: a vector ([`clip`]) and its text ([`ocr`]), for similar photos.
 
 // The bindings wit-bindgen generates have functions with many arguments.
 #![allow(clippy::too_many_arguments)]
 
 wit_bindgen::generate!({ path: "wit", world: "app-with-jobs" });
 
+mod analysis;
 mod api;
+mod clip;
 mod exif;
 mod faces;
 mod index;
 mod media;
+mod models;
+mod ocr;
 mod people;
 mod upload;
 mod vision;
@@ -53,6 +59,8 @@ impl Guest for Photos {
             Some("prune") => media::run_prune(&jobs),
             Some("faces") => faces::run_faces(&jobs),
             Some("people") => people::run_people(&jobs),
+            Some("clip") => clip::run_clip(&jobs),
+            Some("ocr") => ocr::run_ocr(&jobs),
             _ => jobs.iter().map(|job| Outcome::Failed(format!("unknown kind {}", job.kind))).collect(),
         }
     }
