@@ -87,6 +87,12 @@
       similarNotReady: 'This photo has not been analysed yet.',
       similarNone: 'No similar photos.',
       textInPhoto: 'Text in the photo',
+      stories: 'Stories',
+      yearsAgo: (n) => (n === 1 ? 'A year ago' : `${n} years ago`),
+      trip: (when) => `Trip, ${when}`,
+      personStory: (name) => `${name} through the years`,
+      storyHide: 'Don’t show this again',
+      storyPause: 'Pause (space)',
       facesNone: 'No people yet: a person appears once their face is in a few photos.',
       nameN: (n) => `Name ${n}`,
       attach: 'Attach',
@@ -252,6 +258,16 @@
       similarNotReady: 'Это фото ещё не проанализировано.',
       similarNone: 'Похожих фото нет.',
       textInPhoto: 'Текст на фото',
+      stories: 'Истории',
+      yearsAgo: (n) => {
+        const last = n % 10;
+        const word = n % 100 >= 11 && n % 100 <= 14 ? 'лет' : last === 1 ? 'год' : last >= 2 && last <= 4 ? 'года' : 'лет';
+        return n === 1 ? 'Год назад' : `${n} ${word} назад`;
+      },
+      trip: (when) => `Поездка, ${when}`,
+      personStory: (name) => `${name} сквозь годы`,
+      storyHide: 'Больше не показывать',
+      storyPause: 'Пауза (пробел)',
       facesNone: 'Людей пока нет: человек появится, когда его лицо найдётся на нескольких фото.',
       nameN: (n) => `Name ${n}`,
       attach: 'Присоединить',
@@ -542,6 +558,8 @@
   let faces = { enabled: false };
   /** Photo analysis (similar photos, text in photos), as the administrator set it. */
   let analysis = { enabled: false };
+  /** The stories showing today: `{ enabled, list, seen }`. */
+  let stories = { enabled: false, list: [], seen: [] };
   /** People as the last grouping left them, by id; names are the user's. */
   let people = new Map();
   let names = { names: {}, hidden: [], merged: {} };
@@ -642,7 +660,9 @@
   }
 
   async function loadStateOnce() {
-    const state = await api('GET', '/state');
+    const now = new Date();
+    const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const state = await api('GET', `/state?today=${today}`);
     folders = state.folders;
     favorites = new Set(state.favorites);
     uploadFolderId = state.uploadFolder ?? null;
@@ -650,6 +670,7 @@
     ffmpeg = state.ffmpeg;
     faces = state.faces ?? { enabled: false };
     analysis = state.analysis ?? { enabled: false };
+    stories = state.stories?.enabled ? { list: [], seen: [], ...state.stories } : { enabled: false, list: [], seen: [] };
     names = state.names ?? names;
     await Promise.all([loadPeople(state.people), loadTexts(state.texts)]);
     personFilesCache = new Map();
@@ -914,6 +935,331 @@
     if (sortNewest) shown.reverse();
   }
 
+  // ── Stories ────────────────────────────────────────────────────────
+
+  /** A story's title, from what the job put in it. */
+  function storyTitle(story) {
+    const p = story.params ?? {};
+    const day = (date) => new Date(`${date}T12:00:00`);
+    switch (story.kind) {
+      case 'on-this-day':
+        return t.yearsAgo(p.years);
+      case 'trip':
+        return t.trip(monthFormat.format(day(p.from)));
+      case 'event':
+        return capitalize(dayYearFormat.format(day(p.date)));
+      case 'person':
+        return t.personStory(personName(personOf(p.person)));
+      default:
+        return t.stories;
+    }
+  }
+
+  /** The stories that can be shown: their photos are in the library. */
+  function playableStories() {
+    return (stories.list ?? [])
+      .map((story) => ({ ...story, items: story.items.filter((item) => byId.has(item.id)) }))
+      .filter((story) => story.items.length && byId.has(story.cover));
+  }
+
+  /** A row of circles above the feed, while nothing is filtered or selected. */
+  function storiesRow() {
+    const list = stories.enabled && loaded && !selected.size && !activeFilters().length ? playableStories() : [];
+    if (!list.length) return h('div', { hidden: true });
+    return h(
+      'nav',
+      { class: 'stories', 'aria-label': t.stories },
+      ...list.map((story, index) => {
+        const img = h('img', { alt: '', draggable: 'false' });
+        link('thumb', byId.get(story.cover)).then((url) => url && (img.src = url));
+        return h(
+          'button',
+          {
+            class: 'story' + (stories.seen.includes(story.date) ? ' seen' : ''),
+            'data-date': story.date,
+            onclick: () => new StoryPlayer(list, index).open(),
+          },
+          h('span', { class: 'ring' }, img),
+          h('span', { class: 'label' }, storyTitle(story)),
+        );
+      }),
+    );
+  }
+
+  /**
+   * Plays stories full screen: photos for their time with a slow zoom to
+   * their focus, video clips; bars for the items; tap the left third to go
+   * back, the rest to go on, hold to pause, swipe down or Esc to close.
+   */
+  class StoryPlayer {
+    constructor(list, index) {
+      this.list = list;
+      this.storyIndex = index;
+      this.itemIndex = 0;
+      this.paused = false;
+      this.muted = true;
+    }
+
+    open() {
+      // Like the viewer, the player takes the whole window when the panel lets it.
+      this.window = ownsWindow();
+      if (this.window) rustcloud.setLayout('full');
+      this.bars = h('div', { class: 'story-bars' });
+      this.title = h('div', { class: 'story-title' });
+      this.date = h('div', { class: 'story-date' });
+      this.stage = h('div', { class: 'story-stage' });
+      this.soundButton = iconButton('muted', t.unmute, () => this.toggleSound(), { class: 'icon-btn' });
+      this.root = h(
+        'div',
+        { class: 'story-player' + (this.window ? ' window' : ''), role: 'dialog', 'aria-modal': 'true', tabindex: -1 },
+        this.stage,
+        h(
+          'div',
+          { class: 'story-top' },
+          this.bars,
+          h(
+            'div',
+            { class: 'story-head' },
+            h('div', { class: 'story-names' }, this.title, this.date),
+            this.soundButton,
+            iconButton('trash', t.storyHide, () => this.hide(), { class: 'icon-btn' }),
+            iconButton('close', t.close, () => this.close(), { class: 'icon-btn' }),
+          ),
+        ),
+      );
+      document.body.append(this.root);
+      this.onKey = (event) => this.key(event);
+      document.addEventListener('keydown', this.onKey);
+      this.pointer();
+      this.root.focus();
+      this.startStory();
+      this.frame = requestAnimationFrame((now) => this.tick(now));
+    }
+
+    get story() {
+      return this.list[this.storyIndex];
+    }
+
+    startStory() {
+      const story = this.story;
+      this.title.textContent = storyTitle(story);
+      const p = story.params ?? {};
+      const day = (date) => capitalize(dayYearFormat.format(new Date(`${date}T12:00:00`)));
+      this.date.textContent = p.date && story.kind === 'on-this-day' ? day(p.date) : p.from ? `${day(p.from)} — ${day(p.to)}` : '';
+      this.bars.replaceChildren(...story.items.map(() => h('span', {}, h('i'))));
+      if (!stories.seen.includes(story.date)) {
+        stories.seen.push(story.date);
+        api('POST', `/stories/${story.date}/seen`).catch(() => {});
+      }
+      this.show();
+    }
+
+    /** Shows the current item from its start. */
+    show() {
+      const story = this.story;
+      const item = story.items[this.itemIndex];
+      const entry = byId.get(item.id);
+      this.cleanup();
+      this.elapsed = 0;
+      this.last = null;
+      [...this.bars.children].forEach((bar, i) => {
+        bar.firstChild.style.width = i < this.itemIndex ? '100%' : '0%';
+      });
+      if (entry.video) {
+        this.showVideo(entry, item);
+      } else {
+        const img = h('img', { class: 'story-photo', alt: entry.name, draggable: 'false' });
+        const [fx, fy] = item.focus ?? [0.5, 0.5];
+        img.style.transformOrigin = `${(fx * 100).toFixed(1)}% ${(fy * 100).toFixed(1)}%`;
+        link('thumb', entry).then((url) => url && !img.src && (img.src = url));
+        const kind = entry.preview ? 'preview' : PHOTOS_SHOWN.includes(entry.mime) ? 'original' : null;
+        if (kind) link(kind, entry).then((url) => url && (img.src = url));
+        this.stage.replaceChildren(img);
+        this.zoom = img.animate([{ transform: 'scale(1)' }, { transform: 'scale(1.12)' }], {
+          duration: item.ms,
+          fill: 'forwards',
+          easing: 'ease-out',
+        });
+        if (this.paused) this.zoom.pause();
+      }
+    }
+
+    async showVideo(entry, item) {
+      const video = h('video', { class: 'story-video', playsinline: true, muted: this.muted, autoplay: true });
+      video.muted = this.muted;
+      link('thumb', entry).then((url) => url && (video.poster = url));
+      this.stage.replaceChildren(video);
+      this.video = video;
+      const start = () => {
+        video.currentTime = (item.from ?? 0) / 1000;
+        if (!this.paused) video.play().catch(() => {});
+      };
+      try {
+        if (playsAsIs(entry)) {
+          const url = await link('original', entry);
+          if (this.video !== video) return;
+          video.addEventListener('loadedmetadata', start, { once: true });
+          video.src = url;
+        } else {
+          const { url } = await api('GET', `/stream/${entry.id}?mode=${decodes(entry) ? 'copy' : 'h264'}`);
+          if (this.video !== video) return;
+          video.addEventListener('loadedmetadata', start, { once: true });
+          if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = url;
+          } else {
+            const Hls = await loadHls();
+            if (this.video !== video || !Hls?.isSupported()) return;
+            this.hls = new Hls();
+            this.hls.loadSource(url);
+            this.hls.attachMedia(video);
+          }
+        }
+      } catch {
+        // The poster shows for the clip's time.
+      }
+    }
+
+    cleanup() {
+      this.zoom?.cancel();
+      this.zoom = null;
+      this.hls?.destroy();
+      this.hls = null;
+      if (this.video) {
+        this.video.pause();
+        this.video.removeAttribute('src');
+        this.video.load();
+      }
+      this.video = null;
+    }
+
+    tick(now) {
+      if (!this.root.isConnected) return;
+      if (this.last !== null && !this.paused) this.elapsed += now - this.last;
+      this.last = now;
+      const item = this.story.items[this.itemIndex];
+      const bar = this.bars.children[this.itemIndex]?.firstChild;
+      if (bar) bar.style.width = `${Math.min(100, (this.elapsed / item.ms) * 100)}%`;
+      if (this.elapsed >= item.ms) this.go(1);
+      this.frame = requestAnimationFrame((next) => this.tick(next));
+    }
+
+    go(step) {
+      const items = this.story.items.length;
+      const next = this.itemIndex + step;
+      if (next >= 0 && next < items) {
+        this.itemIndex = next;
+        this.show();
+      } else if (next >= items) {
+        if (this.storyIndex + 1 < this.list.length) {
+          this.storyIndex++;
+          this.itemIndex = 0;
+          this.startStory();
+        } else {
+          this.close();
+        }
+      } else if (this.storyIndex > 0) {
+        this.storyIndex--;
+        this.itemIndex = 0;
+        this.startStory();
+      } else {
+        this.show();
+      }
+    }
+
+    setPaused(paused) {
+      this.paused = paused;
+      this.root.classList.toggle('paused', paused);
+      if (paused) {
+        this.zoom?.pause();
+        this.video?.pause();
+      } else {
+        this.zoom?.play();
+        this.video?.play().catch(() => {});
+      }
+    }
+
+    toggleSound() {
+      this.muted = !this.muted;
+      if (this.video) this.video.muted = this.muted;
+      const fresh = iconButton(this.muted ? 'muted' : 'volume', this.muted ? t.unmute : t.mute, () => this.toggleSound(), {
+        class: 'icon-btn',
+      });
+      this.soundButton.replaceWith(fresh);
+      this.soundButton = fresh;
+    }
+
+    /** Taps, holds and a swipe down on the stage. */
+    pointer() {
+      let down = null;
+      let holdTimer = null;
+      let held = false;
+      this.stage.addEventListener('pointerdown', (event) => {
+        down = { x: event.clientX, y: event.clientY };
+        held = false;
+        holdTimer = setTimeout(() => {
+          held = true;
+          this.setPaused(true);
+        }, 250);
+      });
+      const up = (event) => {
+        if (!down) return;
+        clearTimeout(holdTimer);
+        const dy = event.clientY - down.y;
+        const start = down;
+        down = null;
+        if (held) {
+          this.setPaused(false);
+          return;
+        }
+        if (dy > 80) return this.close();
+        const box = this.stage.getBoundingClientRect();
+        this.go(start.x - box.left < box.width / 3 ? -1 : 1);
+      };
+      this.stage.addEventListener('pointerup', up);
+      this.stage.addEventListener('pointercancel', () => {
+        clearTimeout(holdTimer);
+        if (held) this.setPaused(false);
+        down = null;
+      });
+    }
+
+    key(event) {
+      if (event.key === 'Escape') this.close();
+      else if (event.key === 'ArrowRight') this.go(1);
+      else if (event.key === 'ArrowLeft') this.go(-1);
+      else if (event.key === ' ') this.setPaused(!this.paused);
+      else if (event.key === 'm' || event.key === 'M') this.toggleSound();
+      else return;
+      event.preventDefault();
+    }
+
+    async hide() {
+      const story = this.story;
+      try {
+        await api('POST', `/stories/${story.date}/hide`);
+      } catch (e) {
+        problem = t.error(e.message);
+      }
+      stories.list = stories.list.filter((s) => s.date !== story.date);
+      this.list.splice(this.storyIndex, 1);
+      if (this.storyIndex < this.list.length) {
+        this.itemIndex = 0;
+        this.startStory();
+      } else {
+        this.close();
+      }
+    }
+
+    close() {
+      cancelAnimationFrame(this.frame);
+      this.cleanup();
+      document.removeEventListener('keydown', this.onKey);
+      this.root.remove();
+      if (this.window) rustcloud.setLayout('panel');
+      refresh();
+    }
+  }
+
   // ── Page ───────────────────────────────────────────────────────────
 
   let filtersOpen = innerWidth > 900;
@@ -941,11 +1287,12 @@
   // shows changed.
   let topEl = h('div');
   let chipsEl = h('div');
+  let storiesEl = h('div');
   let noticesEl = h('div');
   let mainEl = h('div');
   let filtersEl = h('div');
   const bodyEl = h('div', { class: 'body' }, mainEl, filtersEl);
-  app.append(topEl, chipsEl, noticesEl, bodyEl);
+  app.append(topEl, chipsEl, storiesEl, noticesEl, bodyEl);
   let shownKey = '';
 
   /** Redraws the page (not the viewer). */
@@ -967,6 +1314,7 @@
     const caret = [searchInput.selectionStart, searchInput.selectionEnd];
     topEl = swap(topEl, topbar());
     chipsEl = swap(chipsEl, chips());
+    storiesEl = swap(storiesEl, storiesRow());
     noticesEl = swap(noticesEl, h('div', { style: 'display:contents' }, notices()));
     const filtersScroll = filtersEl.scrollTop;
     filtersEl = swap(filtersEl, loaded && folders.length && filtersOpen ? filtersPanel() : h('div', { hidden: true }));

@@ -68,8 +68,8 @@ async function until(what, done, limit) {
   }
 }
 let { s, seconds } = await until('media jobs', (s) => !left(s, ['media', 'scan']) && s.shards.length, 120_000);
-console.log(`media jobs done in ${seconds.toFixed(1)} s; analysis: ${JSON.stringify(s.analysis)}, stories: ${s.stories}`);
-check(s.analysis.enabled === true && s.stories === true, 'analysis and stories are on with nothing saved');
+console.log(`media jobs done in ${seconds.toFixed(1)} s; analysis: ${JSON.stringify(s.analysis)}, stories: ${s.stories.enabled}`);
+check(s.analysis.enabled === true && s.stories.enabled === true, 'analysis and stories are on with nothing saved');
 
 // The models download (≈385 MB); each look at the state adds the jobs once they are there.
 ({ s, seconds } = await until(
@@ -161,7 +161,7 @@ await frame.locator('.topbar .search input').fill('');
 
 await json(await api.put('/api/v1/admin/plugins/rc-photo/settings', { headers: H, data: { vision: false } }), 'vision off');
 s = await state();
-check(s.analysis.enabled === false && s.stories === true, 'turned off, analysis says so; stories stay on');
+check(s.analysis.enabled === false && s.stories.enabled === true, 'turned off, analysis says so; stories stay on');
 await page.reload(); // goto to the same address would only change the hash
 await tiles.first().waitFor();
 await open('cat_1.jpg');

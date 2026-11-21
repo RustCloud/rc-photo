@@ -1,5 +1,5 @@
 id = "rc-photo"
-version = "0.6.1"
+version = "0.7.0"
 # The version of wit/app.wit: neural networks (use.onnx) need 0.2.13, settings
 # with defaults 0.2.20.
 api = "^0.2.20"
@@ -131,6 +131,14 @@ time = 2
 [[jobs]]
 kind = "ocr"
 batch = 2
+time = 4
+memory = 4
+
+# A story a day (since 0.7.0), one a job: the day's photos are chosen
+# from the whole index, read a shard at a time.
+[[jobs]]
+kind = "story"
+batch = 1
 time = 4
 memory = 4
 

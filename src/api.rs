@@ -42,12 +42,12 @@ use crate::{faces, people};
 const MAX_LINKS: usize = 1000;
 /// Most files one request deletes or marks (the server's limit for `jobs.add`).
 const MAX_IDS: usize = 1000;
-const FAVORITES: &str = "favorites.json";
+pub const FAVORITES: &str = "favorites.json";
 const UPLOAD_FOLDER: &str = "upload-folder.txt";
 
 pub fn handle(method: &str, path: &str, query: &str, body: &[u8]) -> Response {
     match (method, path) {
-        ("GET", "/state") => state(),
+        ("GET", "/state") => state(&query_param(query, "today")),
         ("POST", "/links") => match serde_json::from_slice::<LinksRequest>(body) {
             Ok(request) => links_for(&request.items),
             Err(err) => error(400, &err.to_string()),
@@ -90,6 +90,13 @@ pub fn handle(method: &str, path: &str, query: &str, body: &[u8]) -> Response {
             if let Some(id) = path.strip_prefix("/similar/") {
                 return match method {
                     "GET" => crate::analysis::similar(id),
+                    _ => error(405, "method not allowed"),
+                };
+            }
+            if let Some(rest) = path.strip_prefix("/stories/") {
+                return match (method, rest.split_once('/')) {
+                    ("POST", Some((date, "seen"))) => crate::stories::mark_seen(date),
+                    ("POST", Some((date, "hide"))) => crate::stories::hide(date),
                     _ => error(405, "method not allowed"),
                 };
             }
@@ -168,7 +175,7 @@ fn shard_links(dir: &str) -> Result<Vec<String>, Response> {
 }
 
 /// Everything the page needs to start, in one answer.
-fn state() -> Response {
+fn state(today: &str) -> Response {
     let folders = match granted_folders() {
         Ok(folders) => folders,
         Err(err) => return files_error(err),
@@ -202,7 +209,7 @@ fn state() -> Response {
         "faces": faces::status(),
         "analysis": analysis,
         "texts": text_links,
-        "stories": crate::models::Switches::read().stories,
+        "stories": crate::stories::status(Some(today).filter(|t| !t.is_empty())),
         "people": people,
         "names": people::Names::read(),
         "folders": folders,
