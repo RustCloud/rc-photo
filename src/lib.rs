@@ -9,7 +9,8 @@
 //! server's neural networks and [`people`] groups them into people.
 //! Unless the administrator turns it off, [`analysis`] looks at every photo
 //! once: a vector ([`clip`]) and its text ([`ocr`]), for similar photos;
-//! [`stories`] makes a story a day from the photos.
+//! [`describe`] finds photos by words; [`stories`] makes a story a day
+//! from the photos.
 
 // The bindings wit-bindgen generates have functions with many arguments.
 #![allow(clippy::too_many_arguments)]
@@ -19,6 +20,7 @@ wit_bindgen::generate!({ path: "wit", world: "app-with-jobs" });
 mod analysis;
 mod api;
 mod clip;
+mod describe;
 mod exif;
 mod faces;
 mod index;
@@ -64,6 +66,7 @@ impl Guest for Photos {
             Some("clip") => clip::run_clip(&jobs),
             Some("ocr") => ocr::run_ocr(&jobs),
             Some("story") => stories::run_story(&jobs),
+            Some("describe") => describe::run_describe(&jobs),
             _ => jobs.iter().map(|job| Outcome::Failed(format!("unknown kind {}", job.kind))).collect(),
         }
     }

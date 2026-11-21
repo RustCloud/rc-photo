@@ -84,6 +84,7 @@ jobs:
           node --check e2e/faces.mjs
           node --check e2e/vision.mjs
           node --check e2e/stories.mjs
+          node --check e2e/describe-limits.mjs
 
       - name: Build
         run: |

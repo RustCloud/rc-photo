@@ -1,5 +1,5 @@
 id = "rc-photo"
-version = "0.7.0"
+version = "0.8.0"
 # The version of wit/app.wit: neural networks (use.onnx) need 0.2.13, settings
 # with defaults 0.2.20.
 api = "^0.2.20"
@@ -77,6 +77,21 @@ url = "https://huggingface.co/PaddlePaddle/cyrillic_PP-OCRv5_mobile_rec_onnx/res
 sha256 = "5371ee1ddaa7983cc62d0818d99e982b6804638c85e4f960d59a574094e172e5"
 size = 8048799
 
+# Search by description (since 0.8.0): SigLIP 2's text half and its
+# tokenizer. Large: the server needs `[onnx] max_model_mib = 1200` and
+# `memory_mib = 3072` for it; with less, only this search is missing.
+[[downloads]]
+path = "models/clip-text.onnx"
+url = "https://huggingface.co/immich-app/ViT-B-16-SigLIP2__webli/resolve/5f3fc29104ebcf51e9d893af57604badd51a3ea6/textual/model.onnx"
+sha256 = "fc9991b415d7d0fac7ed540e875fd08a647c8a1abba99f12542531b004c4b68f"
+size = 1129435819
+
+[[downloads]]
+path = "models/clip-text-tokenizer.json"
+url = "https://huggingface.co/immich-app/ViT-B-16-SigLIP2__webli/resolve/5f3fc29104ebcf51e9d893af57604badd51a3ea6/textual/tokenizer.json"
+sha256 = "220c63d496e0c14e63eb656c91e0215e926202e4c74b1f089e09f1920d779b04"
+size = 34362885
+
 [[downloads]]
 path = "models/ocr-rec.yml"
 url = "https://huggingface.co/PaddlePaddle/cyrillic_PP-OCRv5_mobile_rec_onnx/resolve/2cef88145434beb8afa9dd82d77d799eb1ad7b29/inference.yml"
@@ -141,6 +156,14 @@ kind = "story"
 batch = 1
 time = 4
 memory = 4
+
+# Readies search by description (since 0.8.0), one job: the vocabulary
+# made from the 34 MB tokenizer, the text model tried once.
+[[jobs]]
+kind = "describe"
+batch = 1
+time = 4
+memory = 8
 
 # Groups all the faces into people, after `faces` batches.
 [[jobs]]

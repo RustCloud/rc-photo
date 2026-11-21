@@ -6,7 +6,7 @@
   const TEXTS = {
     en: {
       title: 'Photos',
-      search: 'Search by name, folder, camera, text in photos',
+      search: 'Search: what is in the photo, name, folder, camera, text',
       items: (n) => `${n.toLocaleString('en')} ${n === 1 ? 'item' : 'items'}`,
       processing: (n) => `Processing: ${n.toLocaleString('en')} left`,
       failed: (n) => `${n} could not be processed`,
@@ -82,6 +82,9 @@
       facesLooking: (n) => `Looking for faces: ${n} left`,
       analysing: (n) => `Analysing photos: ${n} left`,
       analysisFailed: 'Photo analysis could not start its neural network.',
+      describeFailed: 'Search by description is off: the server could not load its text model.',
+      describeLimits: 'For the administrator: the model needs [onnx] max_model_mib = 1200 and memory_mib = 3072 in the server’s settings.',
+      describing: 'Searching by description…',
       similar: 'Similar photos',
       similarTo: (name) => `Like ${name}`,
       similarNotReady: 'This photo has not been analysed yet.',
@@ -177,7 +180,7 @@
     },
     ru: {
       title: 'Фото',
-      search: 'Поиск по имени, папке, камере, тексту на фото',
+      search: 'Поиск: что на фото, имя, папка, камера, текст',
       items: (n) => `${n.toLocaleString('ru')} ${plural(n, 'файл', 'файла', 'файлов')}`,
       processing: (n) => `Обработка: осталось ${n.toLocaleString('ru')}`,
       failed: (n) => `Не удалось обработать: ${n}`,
@@ -253,6 +256,9 @@
       facesLooking: (n) => `Ищу лица: осталось ${n}`,
       analysing: (n) => `Анализ фото: осталось ${n}`,
       analysisFailed: 'Анализ фото не смог запустить нейросеть.',
+      describeFailed: 'Поиск по описанию недоступен: сервер не смог загрузить текстовую модель.',
+      describeLimits: 'Администратору: модели нужны [onnx] max_model_mib = 1200 и memory_mib = 3072 в настройках сервера.',
+      describing: 'Ищу по описанию…',
       similar: 'Похожие фото',
       similarTo: (name) => `Похожие на ${name}`,
       similarNotReady: 'Это фото ещё не проанализировано.',
@@ -701,6 +707,10 @@
   /** The text read in photos, lower case, by file id (`ocr/<shard>.json`). */
   let texts = new Map();
   let textCache = new Map();
+  /** Photos found by description for the query `q` ([describeSoon]). */
+  let described = { q: '', ids: new Set() };
+  let describing = false;
+  let describeTimer = null;
   async function loadTexts(urls) {
     const next = new Map();
     await Promise.all(
@@ -775,7 +785,7 @@
   }
 
   /** Analysis jobs change nothing in the feed: they don't count as processing or keep the page polling. */
-  const ANALYSIS_KINDS = ['clip', 'ocr'];
+  const ANALYSIS_KINDS = ['clip', 'ocr', 'describe'];
   const waiting = () =>
     Object.entries(progress).reduce((sum, [kind, counts]) => sum + (ANALYSIS_KINDS.includes(kind) ? 0 : counts.waiting), 0);
   const analysing = () => ANALYSIS_KINDS.reduce((sum, kind) => sum + (progress[kind]?.waiting ?? 0), 0);
@@ -845,7 +855,11 @@
     if (filters.gps && !entry.gps) return false;
     if (filters.from && entry._day < filters.from) return false;
     if (filters.to && entry._day > filters.to) return false;
-    if (filters.q && !filters.q.split(/\s+/).every((word) => entry._search.includes(word) || texts.get(entry.id)?.includes(word))) {
+    if (
+      filters.q &&
+      !filters.q.split(/\s+/).every((word) => entry._search.includes(word) || texts.get(entry.id)?.includes(word)) &&
+      !(described.q === filters.q && described.ids.has(entry.id))
+    ) {
       return false;
     }
     for (const id of filters.people) if (!personFiles(id).has(entry.id)) return false;
@@ -1278,9 +1292,38 @@
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => {
       filters.q = searchInput.value.trim().toLowerCase();
+      describeSoon();
       refresh({ keepScroll: false });
     }, 150);
   });
+
+  // Search by description (since 0.8.0): the server compares the words with
+  // the photos' vectors; what it finds joins what the words match by name,
+  // folder, camera and text in photos.
+  function describeSoon() {
+    clearTimeout(describeTimer);
+    const q = filters.q;
+    if (!q || analysis.parts?.text !== 'ready') {
+      describing = false;
+      return;
+    }
+    if (described.q === q) return;
+    describing = true;
+    describeTimer = setTimeout(async () => {
+      let ids = [];
+      try {
+        const found = await api('GET', `/describe?q=${encodeURIComponent(q)}`);
+        if (found.ready) ids = found.ids;
+        else if (String(found.why).startsWith('failed')) analysis.parts.text = found.why;
+      } catch {
+        // Words still match by name and text.
+      }
+      if (filters.q !== q) return;
+      described = { q, ids: new Set(ids) };
+      describing = false;
+      refresh({ keepScroll: false });
+    }, 350);
+  }
 
   // The page's parts; refresh() swaps the ones that changed and leaves the
   // timeline in place (its scroll position, its pictures) unless what it
@@ -1347,7 +1390,12 @@
       { class: 'topbar' },
       h('h1', {}, t.title),
       loaded && folders.length ? h('span', { class: 'count' }, t.items(shown.length)) : null,
-      h('label', { class: 'search' }, icon('search'), searchInput),
+      h(
+        'label',
+        { class: 'search', title: describing ? t.describing : null },
+        describing ? h('span', { class: 'spinner' }) : icon('search'),
+        searchInput,
+      ),
       h('div', { class: 'spacer' }),
       left ? h('span', { class: 'progress-chip' }, h('span', { class: 'spinner' }), t.processing(left)) : null,
       iconButton('sort', sortNewest ? t.newest : t.oldest, () => {
@@ -1431,6 +1479,7 @@
         ? emptyCard('image', t.indexing, t.emptyLibraryHint, h('div', { class: 'spinner' }))
         : emptyCard('image', t.emptyLibrary, t.emptyLibraryHint);
     }
+    if (!shown.length && describing) return h('div', { class: 'empty' }, h('div', { class: 'spinner' }));
     if (!shown.length) {
       const reset = () => {
         clearAll();
@@ -1568,13 +1617,17 @@
   function analysisSection() {
     if (!analysis.enabled) return null;
     const left = analysing();
-    const failed = Object.values(analysis.parts ?? {}).some((state) => String(state).startsWith('failed'));
-    if (!left && !failed) return null;
+    const parts = analysis.parts ?? {};
+    const failed = ['clip', 'ocr'].some((part) => String(parts[part]).startsWith('failed'));
+    const textFailed = String(parts.text).startsWith('failed');
+    if (!left && !failed && !textFailed) return null;
     return h(
       'section',
       {},
       left ? h('p', { class: 'hint', style: 'margin:0' }, h('span', { class: 'spinner' }), t.analysing(left)) : null,
       failed ? h('p', { class: 'hint', style: 'margin:0' }, t.analysisFailed) : null,
+      textFailed ? h('p', { class: 'hint describe-failed', style: 'margin:0', title: parts.text }, t.describeFailed) : null,
+      textFailed ? h('p', { class: 'hint', style: 'margin:0' }, t.describeLimits) : null,
     );
   }
 

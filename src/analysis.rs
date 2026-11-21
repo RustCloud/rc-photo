@@ -13,6 +13,9 @@
 //!
 //! What a part found is kept like the index: `clip/<shard>.json` and
 //! `ocr/<shard>.json`, each written by its own jobs only.
+//!
+//! A third part, `text` (since 0.8.0), has no jobs per photo: one
+//! `describe` job readies search by description ([`crate::describe`]).
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -79,20 +82,24 @@ impl Item for OcrFile {
     }
 }
 
-/// The two parts.
+/// The parts.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Part {
     Clip,
     Ocr,
+    /// Search by description: the text model, no jobs per photo.
+    Text,
 }
 
 impl Part {
+    /// The parts with a job per photo.
     const ALL: [Part; 2] = [Part::Clip, Part::Ocr];
 
     pub fn kind(self) -> &'static str {
         match self {
             Part::Clip => "clip",
             Part::Ocr => "ocr",
+            Part::Text => "text",
         }
     }
 
@@ -100,6 +107,7 @@ impl Part {
         match self {
             Part::Clip => models::clip_tag(),
             Part::Ocr => models::ocr_tag(),
+            Part::Text => models::text_tag(),
         }
     }
 
@@ -107,14 +115,16 @@ impl Part {
         match self {
             Part::Clip => &[models::CLIP],
             Part::Ocr => &[models::OCR_DETECTOR, models::OCR_RECOGNIZER, models::OCR_DICTIONARY],
+            // Words are compared with photos' vectors: no use without them.
+            Part::Text => &[models::TEXT, models::TEXT_TOKENIZER, models::CLIP],
         }
     }
 
     /// A small model of the part, to see whether the plugin may use models.
     fn probe(self) -> &'static str {
         match self {
-            // SigLIP is large: OCR's detector answers for both.
-            Part::Clip | Part::Ocr => models::OCR_DETECTOR,
+            // SigLIP is large: OCR's detector answers for all.
+            Part::Clip | Part::Ocr | Part::Text => models::OCR_DETECTOR,
         }
     }
 }
@@ -143,6 +153,9 @@ pub struct State {
     pub clip: PartState,
     #[serde(default)]
     pub ocr: PartState,
+    /// `started`: the tag the text model was tried and worked for.
+    #[serde(default)]
+    pub text: PartState,
 }
 
 impl State {
@@ -158,6 +171,7 @@ impl State {
         match part {
             Part::Clip => &self.clip,
             Part::Ocr => &self.ocr,
+            Part::Text => &self.text,
         }
     }
 
@@ -165,6 +179,7 @@ impl State {
         match part {
             Part::Clip => &mut self.clip,
             Part::Ocr => &mut self.ocr,
+            Part::Text => &mut self.text,
         }
     }
 }
@@ -230,6 +245,7 @@ pub fn status() -> serde_json::Value {
             let cleared = State {
                 clip: PartState { started: None, ..state.clip },
                 ocr: PartState { started: None, ..state.ocr },
+                text: PartState { started: None, ..state.text },
             };
             let _ = cleared.write();
         }
@@ -264,7 +280,56 @@ pub fn status() -> serde_json::Value {
         };
         parts.insert(part.kind().to_owned(), json!(shown));
     }
+    parts.insert(Part::Text.kind().to_owned(), json!(text_status(&mut state)));
     json!({ "enabled": true, "parts": parts })
+}
+
+/// How search by description stands: `ready`, `preparing` (its job is
+/// added), `failed: …`, or why its models can't run.
+fn text_status(state: &mut State) -> String {
+    if let Err(why) = readiness(Part::Text) {
+        return why.to_owned();
+    }
+    let tag = Part::Text.tag();
+    let current = state.part_mut(Part::Text);
+    if let Some(failure) = &current.failed {
+        if now().saturating_sub(failure.at) < RETRY_FAILED_SECONDS {
+            return format!("failed: {}", failure.why);
+        }
+        *current = PartState::default();
+        let _ = state.write();
+    }
+    if state.text.started.as_deref() == Some(tag.as_str()) {
+        return "ready".to_owned();
+    }
+    // Added again on each look until it is done: the same key, one job.
+    match queue::add(&[NewJob { kind: "describe".into(), key: tag, data: String::new() }]) {
+        Ok(_) => "preparing".to_owned(),
+        Err(err) => format!("failed: {err:?}"),
+    }
+}
+
+/// Whether search by description can run now; why not, if it can't.
+pub fn text_readiness() -> Result<(), String> {
+    if !Switches::read().vision {
+        return Err("off".into());
+    }
+    readiness(Part::Text).map_err(str::to_owned)?;
+    let state = State::read();
+    if let Some(why) = failed_lately(Part::Text) {
+        return Err(format!("failed: {why}"));
+    }
+    if state.text.started.as_deref() != Some(Part::Text.tag().as_str()) {
+        return Err("preparing".into());
+    }
+    Ok(())
+}
+
+/// The `describe` job tried the text model and it worked.
+pub fn text_ready() {
+    let mut state = State::read();
+    state.text = PartState { started: Some(Part::Text.tag()), failed: None };
+    let _ = state.write();
 }
 
 /// Jobs of the part for every photo of the index.
@@ -373,7 +438,7 @@ pub fn text_of(id: &str) -> Response {
     }
 }
 
-fn read_shard<T: Item>(shard: u32) -> Vec<T> {
+pub fn read_shard<T: Item>(shard: u32) -> Vec<T> {
     match AppData.read(&shard_path(T::DIR, shard)) {
         Ok(Some(json)) => serde_json::from_slice(&json).unwrap_or_default(),
         _ => Vec::new(),
@@ -384,7 +449,7 @@ pub fn encode(vector: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(vector)
 }
 
-fn decode(vector: &str) -> Vec<u8> {
+pub fn decode(vector: &str) -> Vec<u8> {
     base64::engine::general_purpose::STANDARD.decode(vector).unwrap_or_default()
 }
 
@@ -396,7 +461,7 @@ fn unit(vector: &[u8]) -> Option<Vec<f32>> {
 }
 
 /// Cosine of a unit vector and a quantized one of the same length.
-fn cosine(unit_vector: &[f32], other: &[u8]) -> Option<f32> {
+pub fn cosine(unit_vector: &[f32], other: &[u8]) -> Option<f32> {
     if other.len() != unit_vector.len() {
         return None;
     }
@@ -425,7 +490,7 @@ pub fn words(lines: &[String]) -> Vec<String> {
 }
 
 /// The best scores of at least `least`, most first, at most `most`.
-fn best(mut scored: Vec<(String, f32)>, least: f32, most: usize) -> Vec<(String, f32)> {
+pub fn best(mut scored: Vec<(String, f32)>, least: f32, most: usize) -> Vec<(String, f32)> {
     scored.retain(|(_, score)| *score >= least);
     scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     scored.truncate(most);
@@ -467,6 +532,7 @@ mod tests {
         let state = State {
             clip: PartState { started: Some("t.1".into()), failed: None },
             ocr: PartState { started: None, failed: Some(Failure { at: 5, why: "no".into() }) },
+            text: PartState::default(),
         };
         let json = serde_json::to_vec(&state).unwrap();
         assert_eq!(serde_json::from_slice::<State>(&json).unwrap(), state);

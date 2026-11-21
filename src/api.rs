@@ -14,6 +14,7 @@
 //! | `POST /api/rebuild`          | walks the folders again, drops what is no longer given |
 //! | `PUT /api/faces`             | turns faces on or off: `{enabled}`                   |
 //! | `DELETE /api/faces`          | turns faces off and deletes faces, people and names  |
+//! | `GET /api/describe?q=`       | photos by description: `{ready, ids, scores}` or `{ready: false, why}` |
 //! | `GET /api/faces/<id>`        | a photo's faces: boxes and people                    |
 //! | `PUT /api/faces/<id>/<n>`    | puts a face with a person: `{person}`, nobody: `{person: null}`, a new one: `{name}` |
 //! | `PUT /api/people/<id>`       | names, hides, shows a person, its face: `{name?, hidden?, cover?}` |
@@ -65,6 +66,7 @@ pub fn handle(method: &str, path: &str, query: &str, body: &[u8]) -> Response {
             Err(err) => error(400, &err.to_string()),
         },
         ("POST", "/rebuild") => rebuild(),
+        ("GET", "/describe") => crate::describe::search(&query_param(query, "q")),
         ("PUT", "/faces") => match serde_json::from_slice::<FacesRequest>(body) {
             Ok(request) => faces::set_enabled(request.enabled),
             Err(err) => error(400, &err.to_string()),

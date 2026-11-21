@@ -19,6 +19,12 @@ pub const OCR_RECOGNIZER: &str = "models/ocr-rec.onnx";
 /// The recognizer's characters (`PostProcess.character_dict`).
 pub const OCR_DICTIONARY: &str = "models/ocr-rec.yml";
 
+/// SigLIP 2 B/16, its text half: a vector of words, to compare with those
+/// of photos (search by description, since 0.8.0).
+pub const TEXT: &str = "models/clip-text.onnx";
+/// Its tokenizer (Gemma's, `tokenizers` format).
+pub const TEXT_TOKENIZER: &str = "models/clip-text-tokenizer.json";
+
 /// What [`CLIP`] takes: values 0–255 become `(v - mean) / std`. SigLIP's
 /// are 127.5 and 127.5 (-1…1); OpenAI CLIP's would be 122.77, 116.75,
 /// 104.09 and 68.50, 66.63, 70.32.
@@ -29,6 +35,7 @@ pub const CLIP_STD: (f32, f32, f32) = (127.5, 127.5, 127.5);
 /// picture, reading the output): every photo is analysed again.
 const CLIP_VERSION: u32 = 1;
 const OCR_VERSION: u32 = 1;
+const TEXT_VERSION: u32 = 1;
 
 const MANIFEST: &str = include_str!("../manifest.toml");
 
@@ -40,6 +47,12 @@ pub fn clip_tag() -> String {
 
 pub fn ocr_tag() -> String {
     tag(&[OCR_DETECTOR, OCR_RECOGNIZER, OCR_DICTIONARY], OCR_VERSION)
+}
+
+/// What vectors of words are made by; they compare with photos' of
+/// [`clip_tag`].
+pub fn text_tag() -> String {
+    tag(&[TEXT, TEXT_TOKENIZER], TEXT_VERSION)
 }
 
 fn tag(paths: &[&str], version: u32) -> String {
@@ -98,11 +111,11 @@ mod tests {
 
     #[test]
     fn the_real_manifest_has_every_model() {
-        for path in [CLIP, OCR_DETECTOR, OCR_RECOGNIZER, OCR_DICTIONARY] {
+        for path in [CLIP, OCR_DETECTOR, OCR_RECOGNIZER, OCR_DICTIONARY, TEXT, TEXT_TOKENIZER] {
             let sha = download_sha256(MANIFEST, path).unwrap_or_else(|| panic!("{path} is not downloaded"));
             assert_eq!(sha.len(), 64, "{path}");
         }
-        assert!(!clip_tag().contains("none") && !ocr_tag().contains("none"));
+        assert!(!clip_tag().contains("none") && !ocr_tag().contains("none") && !text_tag().contains("none"));
         assert_ne!(clip_tag(), ocr_tag());
     }
 

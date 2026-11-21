@@ -2,7 +2,9 @@
 // with use.onnx: the server downloads SigLIP 2 and PP-OCRv5, the page's first
 // look adds `clip` and `ocr` jobs for every photo, the jobs run; similar
 // photos and the text in photos through the API and the page; the
-// administrator's switch.
+// administrator's switch. Since 0.8.0 search by description too: the
+// server must run with [onnx] max_model_mib = 1200 and memory_mib = 3072
+// (RUSTCLOUD_ONNX__MAX_MODEL_MIB, RUSTCLOUD_ONNX__MEMORY_MIB).
 //
 //   node vision.mjs <base url>   (in mcr.microsoft.com/playwright, /e2e = this folder)
 //
@@ -83,6 +85,9 @@ check(s.analysis.parts.clip === 'ready' && s.analysis.parts.ocr === 'ready', 'bo
 console.log(`analysis of ${names.length} photos done in ${seconds.toFixed(1)} s: ${JSON.stringify(s.progress)}`);
 check(!s.progress.clip?.failed && !s.progress.ocr?.failed, 'no analysis job failed');
 check(s.analysis.parts.clip === 'ready' && s.analysis.parts.ocr === 'ready', 'no model failed');
+({ s, seconds } = await until('the text model', (s) => s.analysis.parts.text !== 'preparing', 5 * 60_000));
+console.log(`search by description: ${s.analysis.parts.text} in ${seconds.toFixed(0)} s`);
+check(s.analysis.parts.text === 'ready', 'search by description is ready');
 
 // ── Similar photos and text, through the API ─────────────────────────
 
@@ -106,6 +111,26 @@ for (const name of names) {
 }
 check(texts['sign_1.jpg'].join(' ').toLowerCase().includes('самоилова'), 'the street sign is read');
 check(!texts['forest_1.jpg'].length, 'a forest has no text');
+
+// ── Search by description, through the API ───────────────────────────
+
+const describe = async (q) => json(await api.get(`/app/rc-photo/api/describe?q=${encodeURIComponent(q)}`, { headers: H }), `describe ${q}`);
+const found = {};
+for (const q of ['кот', 'кошка', 'торт', 'лес', 'снег', 'табличка с названием улицы', 'red car', 'компьютер']) {
+  const started = Date.now();
+  const reply = await describe(q);
+  check(reply.ready, `"${q}" is searched`);
+  found[q] = reply.ids.map((id) => ids[id]);
+  console.log(`"${q}" (${Date.now() - started} ms) → ${reply.ids.map((id, i) => `${ids[id]} ${reply.scores[i]}`).join(', ') || '(none)'}`);
+}
+check(found['кот'].slice(0, 2).sort().join() === 'cat_1.jpg,cat_2.jpg' && found['кот'].every((name) => name.startsWith('cat_')), '"кот" finds the two cats and nothing else');
+check(found['кошка'][0]?.startsWith('cat_'), '"кошка" finds a cat');
+check(found['торт'][0] === 'cake_1.jpg', '"торт" finds the cake first');
+check(found['лес'].slice(0, 2).every((name) => name.startsWith('forest_')), '"лес" finds the forests first');
+check(found['снег'].includes('snow_1.jpg'), '"снег" finds the snow');
+check(found['табличка с названием улицы'][0]?.startsWith('sign_'), 'a description of the street sign finds a sign');
+check(found['red car'][0] === 'car_1.jpg', '"red car" (English) finds the car');
+check(!found['компьютер'].length, 'what isn’t in any photo finds nothing');
 
 // ── The page ─────────────────────────────────────────────────────────
 
@@ -155,6 +180,21 @@ await frame.locator('.topbar .search input').fill('самоилова');
 await frame.locator('.tile').nth(1).waitFor({ state: 'detached' }).catch(() => {});
 const searched = await tiles.evaluateAll((all) => all.map((tile) => tile.dataset.id));
 check(searched.length === 1 && searched[0] === byName['sign_1.jpg'], `search by text in photos finds the sign (${searched.map((id) => ids[id]).join(', ')})`);
+await frame.locator('.topbar .search input').fill('');
+
+// ...and what is in them: no name or text says "кошка".
+await page.reload();
+await tiles.first().waitFor();
+await frame.locator('.topbar .search input').fill('кошка');
+// The iframe is of another origin: polled from here.
+for (const started = Date.now(); ; await sleep(300)) {
+  const count = await tiles.count();
+  if (!(await frame.locator('.search .spinner').count()) && count > 0 && count < names.length) break;
+  if (Date.now() - started > 30_000) throw new Error(`search by description on the page: ${count} tiles`);
+}
+const cats = await tiles.evaluateAll((all) => all.map((tile) => tile.dataset.id));
+check(cats.length >= 1 && cats.every((id) => ids[id].startsWith('cat_')), `search by description finds the cats (${cats.map((id) => ids[id]).join(', ')})`);
+await page.screenshot({ path: '/out/vision-describe.png' });
 await frame.locator('.topbar .search input').fill('');
 
 // ── The administrator's switch ───────────────────────────────────────
