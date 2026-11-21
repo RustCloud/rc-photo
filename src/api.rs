@@ -147,27 +147,46 @@ pub fn handle(method: &str, path: &str, query: &str, body: &[u8]) -> Response {
     }
 }
 
+/// Links to the shards of an AppData folder (`index`, `ocr`).
+fn shard_links(dir: &str) -> Result<Vec<String>, Response> {
+    let shards: Vec<appdata::Entry> = match appdata::list(dir) {
+        Ok(entries) => entries.into_iter().filter(|e| !e.is_dir && e.name.ends_with(".json")).collect(),
+        Err(appdata::Error::NotFound) => Vec::new(),
+        Err(err) => return Err(error(500, &format!("{err:?}"))),
+    };
+    let targets: Vec<Target> = shards.iter().map(|e| Target::Appdata(format!("{dir}/{}", e.name))).collect();
+    let mut found = Vec::new();
+    for link in links::create(&targets) {
+        match link {
+            Ok(url) => found.push(url),
+            // Changed between the listing and the link: the next poll gets it.
+            Err(links::Error::NotFound) => {}
+            Err(err) => return Err(links_error(err)),
+        }
+    }
+    Ok(found)
+}
+
 /// Everything the page needs to start, in one answer.
 fn state() -> Response {
     let folders = match granted_folders() {
         Ok(folders) => folders,
         Err(err) => return files_error(err),
     };
-    let shards = match appdata::list(index::DIR) {
-        Ok(entries) => entries.into_iter().filter(|e| !e.is_dir && e.name.ends_with(".json")).collect(),
-        Err(appdata::Error::NotFound) => Vec::new(),
-        Err(err) => return error(500, &format!("{err:?}")),
+    let index_links = match shard_links(index::DIR) {
+        Ok(links) => links,
+        Err(response) => return response,
     };
-    let targets: Vec<Target> = shards.iter().map(|e| Target::Appdata(format!("{}/{}", index::DIR, e.name))).collect();
-    let mut shard_links = Vec::new();
-    for link in links::create(&targets) {
-        match link {
-            Ok(url) => shard_links.push(url),
-            // Changed between the listing and the link: the next poll gets it.
-            Err(links::Error::NotFound) => {}
-            Err(err) => return links_error(err),
+    let analysis = crate::analysis::status();
+    // The text read in photos, searched by the page like names (since 0.6.1).
+    let text_links = if analysis["enabled"] == true {
+        match shard_links(<crate::analysis::OcrFile as crate::index::Item>::DIR) {
+            Ok(links) => links,
+            Err(response) => return response,
         }
-    }
+    } else {
+        Vec::new()
+    };
     let progress: serde_json::Map<String, serde_json::Value> = queue::progress()
         .unwrap_or_default()
         .into_iter()
@@ -181,12 +200,13 @@ fn state() -> Response {
     };
     ok(json!({
         "faces": faces::status(),
-        "analysis": crate::analysis::status(),
+        "analysis": analysis,
+        "texts": text_links,
         "stories": crate::models::Switches::read().stories,
         "people": people,
         "names": people::Names::read(),
         "folders": folders,
-        "shards": shard_links,
+        "shards": index_links,
         "progress": progress,
         "favorites": favorites(),
         "uploadFolder": appdata::read(UPLOAD_FOLDER).ok().and_then(|id| String::from_utf8(id).ok()),

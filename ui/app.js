@@ -6,7 +6,7 @@
   const TEXTS = {
     en: {
       title: 'Photos',
-      search: 'Search by name, folder, camera',
+      search: 'Search by name, folder, camera, text in photos',
       items: (n) => `${n.toLocaleString('en')} ${n === 1 ? 'item' : 'items'}`,
       processing: (n) => `Processing: ${n.toLocaleString('en')} left`,
       failed: (n) => `${n} could not be processed`,
@@ -171,7 +171,7 @@
     },
     ru: {
       title: 'Фото',
-      search: 'Поиск по имени, папке, камере',
+      search: 'Поиск по имени, папке, камере, тексту на фото',
       items: (n) => `${n.toLocaleString('ru')} ${plural(n, 'файл', 'файла', 'файлов')}`,
       processing: (n) => `Обработка: осталось ${n.toLocaleString('ru')}`,
       failed: (n) => `Не удалось обработать: ${n}`,
@@ -651,7 +651,7 @@
     faces = state.faces ?? { enabled: false };
     analysis = state.analysis ?? { enabled: false };
     names = state.names ?? names;
-    await loadPeople(state.people);
+    await Promise.all([loadPeople(state.people), loadTexts(state.texts)]);
     personFilesCache = new Map();
     const next = new Map();
     await Promise.all(
@@ -675,6 +675,28 @@
     library = all.filter((entry) => roots.has(entry.root) && !deletedIds.has(entry.id));
     byId = new Map(library.map((entry) => [entry.id, entry]));
     loaded = true;
+  }
+
+  /** The text read in photos, lower case, by file id (`ocr/<shard>.json`). */
+  let texts = new Map();
+  let textCache = new Map();
+  async function loadTexts(urls) {
+    const next = new Map();
+    await Promise.all(
+      (urls ?? []).map(async (url) => {
+        if (textCache.has(url)) return next.set(url, textCache.get(url));
+        try {
+          const response = await fetch(url);
+          // Rewritten meanwhile: the next look gets the new one.
+          if (!response.ok) return;
+          next.set(url, (await response.json()).filter((file) => file.t?.length).map((file) => [file.id, file.t.join(' ').toLowerCase()]));
+        } catch {
+          // Search goes on without it.
+        }
+      }),
+    );
+    textCache = next;
+    texts = new Map([...next.values()].flat());
   }
 
   /** The people file changes after each grouping: a new link each time. */
@@ -802,7 +824,9 @@
     if (filters.gps && !entry.gps) return false;
     if (filters.from && entry._day < filters.from) return false;
     if (filters.to && entry._day > filters.to) return false;
-    if (filters.q && !filters.q.split(/\s+/).every((word) => entry._search.includes(word))) return false;
+    if (filters.q && !filters.q.split(/\s+/).every((word) => entry._search.includes(word) || texts.get(entry.id)?.includes(word))) {
+      return false;
+    }
     for (const id of filters.people) if (!personFiles(id).has(entry.id)) return false;
     if (filters.similar && !filters.similar.ids.has(entry.id)) return false;
     if (skip !== 'folders' && filters.folders.size && !inFolders(entry, filters.folders)) return false;

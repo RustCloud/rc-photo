@@ -148,6 +148,15 @@ await textRow.waitFor({ timeout: 10_000 });
 check((await textRow.textContent()).toLowerCase().includes('самоилова'), 'the viewer shows the text of the photo');
 await page.screenshot({ path: '/out/vision-text.png' });
 
+// Search finds the text read in photos (since 0.6.1).
+await page.reload(); // goto to the same address would only change the hash
+await tiles.first().waitFor();
+await frame.locator('.topbar .search input').fill('самоилова');
+await frame.locator('.tile').nth(1).waitFor({ state: 'detached' }).catch(() => {});
+const searched = await tiles.evaluateAll((all) => all.map((tile) => tile.dataset.id));
+check(searched.length === 1 && searched[0] === byName['sign_1.jpg'], `search by text in photos finds the sign (${searched.map((id) => ids[id]).join(', ')})`);
+await frame.locator('.topbar .search input').fill('');
+
 // ── The administrator's switch ───────────────────────────────────────
 
 await json(await api.put('/api/v1/admin/plugins/rc-photo/settings', { headers: H, data: { vision: false } }), 'vision off');
