@@ -124,6 +124,7 @@ fn describe(id: &str, shards: &mut Shards<AppData>, places: &mut Places) -> Resu
         return forget(id, shards);
     };
     let etag = node.etag.clone().unwrap_or_default();
+    let date = file_date(&node);
     if let Some(known) = shards.get(id).map_err(later)? {
         if known.etag == etag && known.error.is_none() {
             // Same content: at most renamed or moved.
@@ -131,7 +132,8 @@ fn describe(id: &str, shards: &mut Shards<AppData>, places: &mut Places) -> Resu
                 name: node.name.clone(),
                 folder: place.path.clone(),
                 root: place.root.clone(),
-                modified: node.updated_at.clone(),
+                modified: date.0,
+                dated: date.1,
                 ..known.clone()
             };
             return shards.put(moved).map_err(later);
@@ -146,7 +148,7 @@ fn describe(id: &str, shards: &mut Shards<AppData>, places: &mut Places) -> Resu
             let problem = ffmpeg_problem(err);
             if let Problem::Broken(why) = &problem {
                 // Still in the gallery, as a tile without a picture.
-                let mut entry = entry(&node, &place, &no_metadata());
+                let mut entry = entry(&node, &place, &no_metadata(), date.clone());
                 entry.error = Some(why.clone());
                 shards.put(entry).map_err(later)?;
             }
@@ -154,7 +156,7 @@ fn describe(id: &str, shards: &mut Shards<AppData>, places: &mut Places) -> Resu
         }
     };
 
-    let mut entry = entry(&node, &place, &metadata);
+    let mut entry = entry(&node, &place, &metadata, date);
     let mut broken = None;
     match picture(&source, THUMB, &thumb_path(id)) {
         Ok(()) => entry.thumb = true,
@@ -260,6 +262,34 @@ pub fn rescan(folders: &[String]) -> Result<(), queue::Error> {
     jobs.chunks(1000).try_for_each(queue::add)
 }
 
+/// Marks an index whose old entries were sent to be dated again (0.8.1).
+const DATES_MARK: &str = "dates.json";
+
+/// Once per user: entries made before 0.8.1 date photos without a shot time
+/// by their upload day. Their `media` jobs date them again — same content:
+/// no ffmpeg, only the file's times. Entries made since are dated already,
+/// so a fresh index sends none. Marked first, so pages opened together send
+/// them once; if sending fails, "Rebuild" is there.
+pub fn refresh_dates_once() {
+    if !matches!(appdata::read(DATES_MARK), Err(appdata::Error::NotFound)) {
+        return;
+    }
+    let mut old = Vec::new();
+    let mut shards: Shards<AppData> = Shards::new(AppData);
+    let read = shards.update_all(|entry| {
+        if !entry.dated {
+            old.push(NewJob { kind: "media".into(), key: entry.id.clone(), data: "dates".into() });
+        }
+        false
+    });
+    if read.is_err() || appdata::write(DATES_MARK, br#"{"version":1}"#).is_err() {
+        return;
+    }
+    if let Err(err) = old.chunks(1000).try_for_each(queue::add) {
+        crate::rustcloud::app::log::warn(&format!("dates of the index not refreshed: {err:?}"));
+    }
+}
+
 /// A photo or video the gallery shows. SVG is a picture too, but ffmpeg
 /// doesn't draw it.
 pub fn is_media(node: &files::Node) -> bool {
@@ -276,7 +306,9 @@ pub fn shown_by_browsers(mime: &str) -> bool {
 }
 
 /// The index entry of a file, from what ffmpeg says about it.
-pub fn entry(node: &files::Node, place: &Place, info: &Metadata) -> Entry {
+/// `date`: the file's own date, and whether it came from the client's
+/// times ([`file_date`]).
+pub fn entry(node: &files::Node, place: &Place, info: &Metadata, date: (String, bool)) -> Entry {
     let exposure = exif::exposure(&info.tags);
     let mime = node.mime_type.clone().filter(|m| !m.is_empty()).unwrap_or_else(|| info.mime_type.clone());
     let video = mime.starts_with("video/") || (!info.still && !info.video.is_empty());
@@ -290,7 +322,8 @@ pub fn entry(node: &files::Node, place: &Place, info: &Metadata) -> Entry {
         mime,
         video,
         taken: info.taken_at.clone(),
-        modified: node.updated_at.clone(),
+        modified: date.0,
+        dated: date.1,
         width: info.width.unwrap_or(0),
         height: info.height.unwrap_or(0),
         camera: camera(info.camera_make.as_deref(), info.camera_model.as_deref()),
@@ -340,6 +373,27 @@ fn camera(make: Option<&str>, model: Option<&str>) -> Option<String> {
         _ => format!("{make} {model}"),
     };
     (!name.is_empty()).then_some(name)
+}
+
+/// The date of a file when its photo says none: the earlier of the times its
+/// client gave (since API 0.2.21): when it was made on the device (`ctime`) or
+/// last changed there (`mtime`). A copy made on Windows is born when copied
+/// but keeps its mtime; a client that sent no `ctime` leaves the upload time
+/// as the birth. `updated-at` is the server's last change — the upload day —
+/// and stays only if the times can't be had (then `false`: dated again on
+/// the next pass).
+fn file_date(node: &files::Node) -> (String, bool) {
+    match files::get_times(&node.id) {
+        Ok(times) => (earliest(&times.modified_at, &times.born_at), true),
+        Err(_) => (node.updated_at.clone(), false),
+    }
+}
+
+/// The earlier of two RFC 3339 times from the server, both in UTC: compared
+/// to the second, then as text (`…:00+00:00` before `…:00.5+00:00`).
+fn earliest(a: &str, b: &str) -> String {
+    let key = |t: &str| (t.get(..19).unwrap_or(t).to_owned(), t.to_owned());
+    if key(b) < key(a) { b } else { a }.to_owned()
 }
 
 /// Where a file is among the granted folders.
@@ -440,6 +494,16 @@ mod tests {
     }
 
     #[test]
+    fn a_file_dates_from_the_earlier_client_time() {
+        // A Windows copy: born when copied, changed when shot.
+        assert_eq!(earliest("2024-03-01T09:00:00+00:00", "2026-11-25T06:00:00+00:00"), "2024-03-01T09:00:00+00:00");
+        assert_eq!(earliest("2026-11-25T06:00:00+00:00", "2024-03-01T09:00:00+00:00"), "2024-03-01T09:00:00+00:00");
+        // Within a second: the whole second first.
+        assert_eq!(earliest("2024-03-01T09:00:00.500+00:00", "2024-03-01T09:00:00+00:00"), "2024-03-01T09:00:00+00:00");
+        assert_eq!(earliest("2024-03-01T09:00:00Z", "2024-03-01T09:00:00Z"), "2024-03-01T09:00:00Z");
+    }
+
+    #[test]
     fn cameras_are_named_once() {
         assert_eq!(camera(Some("Apple"), Some("iPhone 15 Pro")).unwrap(), "Apple iPhone 15 Pro");
         assert_eq!(camera(Some("Canon"), Some("Canon EOS R5")).unwrap(), "Canon EOS R5");
@@ -464,7 +528,7 @@ mod tests {
             tags: vec![("exif.FNumber".into(), "178/100 (1.7800)".into())],
             ..no_metadata()
         };
-        let entry = entry(&node("IMG_1.HEIC", Some("image/heic")), &place, &info);
+        let entry = entry(&node("IMG_1.HEIC", Some("image/heic")), &place, &info, ("2026-10-01T10:00:00+00:00".into(), true));
         assert_eq!(entry.mime, "image/heic");
         assert!(!entry.video);
         assert_eq!((entry.width, entry.height), (3024, 4032));
@@ -495,7 +559,8 @@ mod tests {
             }],
             ..no_metadata()
         };
-        let entry = entry(&node("clip.mov", Some("video/quicktime")), &place, &info);
+        let entry =
+            entry(&node("clip.mov", Some("video/quicktime")), &place, &info, ("2026-10-01T10:00:00+00:00".into(), true));
         assert!(entry.video);
         assert_eq!(entry.duration, Some(12_500));
         assert_eq!(entry.codec.as_deref(), Some("hevc"));

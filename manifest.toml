@@ -1,8 +1,8 @@
 id = "rc-photo"
-version = "0.8.0"
+version = "0.8.1"
 # The version of wit/app.wit: neural networks (use.onnx) need 0.2.13, settings
-# with defaults 0.2.20.
-api = "^0.2.20"
+# with defaults 0.2.20, the files' own times (files.get-times) 0.2.21.
+api = "^0.2.21"
 
 # Batches of one user run one after another, whatever the administrator
 # sets as workers: they rewrite the same files of the user's AppData.

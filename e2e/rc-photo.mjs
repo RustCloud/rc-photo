@@ -224,7 +224,9 @@ const started = Date.now();
 let state;
 for (;;) {
   state = await json(await api.get('/app/rc-photo/api/state', { headers: H }), 'state');
-  const left = Object.values(state.progress).reduce((sum, kind) => sum + kind.waiting, 0);
+  // The index only: analysis (clip, ocr) takes minutes since the server reads
+  // text for real (60e0e59), and this test doesn't use it.
+  const left = ['media', 'scan'].reduce((sum, kind) => sum + (state.progress[kind]?.waiting ?? 0), 0);
   if (!left && state.shards.length) break;
   if (Date.now() - started > 180_000) throw new Error(`jobs not done: ${JSON.stringify(state.progress)}`);
   await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -547,7 +549,7 @@ await page.screenshot({ path: '/out/light-phone.png' });
 const countEntries = async () => {
   for (const started = Date.now(); ; ) {
     const now = await json(await api.get('/app/rc-photo/api/state', { headers: H }), 'state');
-    if (!Object.values(now.progress).some((kind) => kind.waiting)) {
+    if (!['media', 'scan', 'prune'].some((kind) => now.progress[kind]?.waiting)) {
       let n = 0;
       for (const url of now.shards) n += (await json(await api.get(url), 'shard')).length;
       return n;

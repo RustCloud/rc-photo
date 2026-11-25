@@ -182,6 +182,7 @@ fn state(today: &str) -> Response {
         Ok(folders) => folders,
         Err(err) => return files_error(err),
     };
+    media::refresh_dates_once();
     let index_links = match shard_links(index::DIR) {
         Ok(links) => links,
         Err(response) => return response,

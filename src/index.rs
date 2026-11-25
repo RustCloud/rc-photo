@@ -35,8 +35,14 @@ pub struct Entry {
     /// When it was shot (RFC 3339, perhaps without an offset).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub taken: Option<String>,
-    /// The file's last change, RFC 3339: the date when `taken` is missing.
+    /// The file's own date, RFC 3339: the date when `taken` is missing. Since
+    /// 0.8.1 the earlier of the times its client gave (made or changed on the
+    /// device); before, the server's last change — the upload day.
     pub modified: String,
+    /// `modified` came from the client's times (0.8.1). An entry from before
+    /// is dated again once ([`refresh_dates_once`](crate::media::refresh_dates_once)).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dated: bool,
     /// As shown, rotation applied; 0 when unknown.
     pub width: u32,
     pub height: u32,
