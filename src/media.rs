@@ -528,7 +528,8 @@ mod tests {
             tags: vec![("exif.FNumber".into(), "178/100 (1.7800)".into())],
             ..no_metadata()
         };
-        let entry = entry(&node("IMG_1.HEIC", Some("image/heic")), &place, &info, ("2026-10-01T10:00:00+00:00".into(), true));
+        let entry =
+            entry(&node("IMG_1.HEIC", Some("image/heic")), &place, &info, ("2026-10-01T10:00:00+00:00".into(), true));
         assert_eq!(entry.mime, "image/heic");
         assert!(!entry.video);
         assert_eq!((entry.width, entry.height), (3024, 4032));
@@ -559,8 +560,12 @@ mod tests {
             }],
             ..no_metadata()
         };
-        let entry =
-            entry(&node("clip.mov", Some("video/quicktime")), &place, &info, ("2026-10-01T10:00:00+00:00".into(), true));
+        let entry = entry(
+            &node("clip.mov", Some("video/quicktime")),
+            &place,
+            &info,
+            ("2026-10-01T10:00:00+00:00".into(), true),
+        );
         assert!(entry.video);
         assert_eq!(entry.duration, Some(12_500));
         assert_eq!(entry.codec.as_deref(), Some("hevc"));
